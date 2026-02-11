@@ -1,6 +1,14 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
-import type { ActivityAiAnalysis, ActivitySortBy, RunActivity, SortDirection } from '../shared/types.js';
+import type {
+  ActivityAiAnalysis,
+  ActivitySortBy,
+  PeriodAnalysisPeriod,
+  PeriodAnalysisResult,
+  RunActivity,
+  SortDirection,
+  SummaryMetrics,
+} from '../shared/types.js';
 import type { RunRepository } from '../db/repository.js';
 import { runSync, type SyncStats } from '../cli/sync.js';
 
@@ -22,8 +30,51 @@ function normalizeSortDir(input: string | undefined): SortDirection {
   return input === 'asc' ? 'asc' : 'desc';
 }
 
+function normalizePeriod(input: string | undefined): PeriodAnalysisPeriod | null {
+  if (input === 'week' || input === 'month' || input === 'year') {
+    return input;
+  }
+  return null;
+}
+
+function toDateString(value: Date): string {
+  const y = value.getUTCFullYear();
+  const m = String(value.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(value.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getPeriodRangeInShanghai(period: PeriodAnalysisPeriod, now: Date = new Date()): { from: string; to: string } {
+  const shanghaiOffsetMs = 8 * 60 * 60 * 1000;
+  const shanghaiNow = new Date(now.getTime() + shanghaiOffsetMs);
+  const today = new Date(Date.UTC(shanghaiNow.getUTCFullYear(), shanghaiNow.getUTCMonth(), shanghaiNow.getUTCDate()));
+
+  let from = today;
+  if (period === 'week') {
+    const day = today.getUTCDay();
+    const mondayOffset = (day + 6) % 7;
+    from = new Date(today.getTime() - mondayOffset * 24 * 60 * 60 * 1000);
+  } else if (period === 'month') {
+    from = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  } else {
+    from = new Date(Date.UTC(today.getUTCFullYear(), 0, 1));
+  }
+
+  return {
+    from: toDateString(from),
+    to: toDateString(today),
+  };
+}
+
 interface AppOptions {
   analyzeActivity?: (activity: RunActivity) => Promise<string>;
+  analyzePeriod?: (input: {
+    period: PeriodAnalysisPeriod;
+    from: string;
+    to: string;
+    summary: SummaryMetrics;
+    recentRuns: RunActivity[];
+  }) => Promise<string>;
   syncActivities?: (input: { full?: boolean; from?: string }, repository: RunRepository) => Promise<SyncStats>;
 }
 
@@ -167,6 +218,63 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
 
       const content = await options.analyzeActivity(activity);
       const payload: ActivityAiAnalysis = repository.saveActivityAnalysis(id, content);
+      res.json(payload);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/analysis/period', async (req, res, next) => {
+    try {
+      const period = normalizePeriod(req.body?.period as string | undefined);
+      if (!period) {
+        res.status(400).json({ error: 'Invalid period. Use week, month, or year.' });
+        return;
+      }
+
+      if (!options.analyzePeriod) {
+        res.status(501).json({ error: 'AI period analysis is not configured on the server.' });
+        return;
+      }
+
+      const range = getPeriodRangeInShanghai(period);
+      const summary = repository.getSummary(range);
+      if (summary.totalRuns === 0) {
+        const payload: PeriodAnalysisResult = {
+          period,
+          from: range.from,
+          to: range.to,
+          generatedAt: new Date().toISOString(),
+          content: `## 周期总结\n${range.from} 到 ${range.to} 暂无跑步数据。\n\n## 训练亮点\n当前周期暂无可分析样本。\n\n## 风险提示\n若连续多周期无训练，建议从低强度恢复。\n\n## 下阶段建议\n1. 先安排每周 2-3 次轻松跑。\n2. 逐步增加单次时长。\n3. 记录心率与配速，便于后续分析。`,
+        };
+        res.json(payload);
+        return;
+      }
+
+      const recentRuns = repository.listActivities({
+        from: range.from,
+        to: range.to,
+        page: 1,
+        pageSize: 20,
+        sortBy: 'start_date_local',
+        sortDir: 'desc',
+      }).items;
+
+      const content = await options.analyzePeriod({
+        period,
+        from: range.from,
+        to: range.to,
+        summary,
+        recentRuns,
+      });
+
+      const payload: PeriodAnalysisResult = {
+        period,
+        from: range.from,
+        to: range.to,
+        content,
+        generatedAt: new Date().toISOString(),
+      };
       res.json(payload);
     } catch (error) {
       next(error);

@@ -244,6 +244,26 @@ input {
   overflow: auto;
 }
 
+.period-analysis-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.period-analysis-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.period-analysis-meta {
+  margin: 8px 0;
+  color: var(--ink-1);
+  font-size: 13px;
+}
+
 .table-header {
   display: flex;
   justify-content: space-between;

@@ -405,4 +405,57 @@ describe('App', () => {
     const summaryCalls = fetchMock.mock.calls.filter((entry) => String(entry[0]).startsWith('/api/summary'));
     expect(summaryCalls.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('generates week/month/year period analysis in realtime', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/analysis/period')) {
+        return createResponse({
+          period: 'week',
+          from: '2026-02-09',
+          to: '2026-02-11',
+          generatedAt: '2026-02-11T08:00:00.000Z',
+          content: '## 周期总结\\n周训练状态稳定',
+        });
+      }
+      if (url.startsWith('/api/summary')) {
+        return createResponse({
+          totalRuns: 1,
+          totalDistanceM: 10000,
+          totalMovingTimeS: 3600,
+          totalElevationGainM: 100,
+          averagePaceSecPerKm: 360,
+          bestPaceSecPerKm: 340,
+          averageHeartrate: 150,
+        });
+      }
+      if (url.startsWith('/api/trends/weekly')) {
+        return createResponse([]);
+      }
+      if (url.startsWith('/api/filters/calendar')) {
+        return createResponse({
+          years: [2026],
+          monthsByYear: {
+            '2026': [2],
+          },
+        });
+      }
+      if (url.startsWith('/api/activities')) {
+        return createResponse({ page: 1, pageSize: 20, total: 0, items: [] });
+      }
+
+      return createErrorResponse(404, { error: 'unexpected request' });
+    });
+
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '按周分析' }));
+
+    expect(await screen.findByText(/周训练状态稳定/)).toBeInTheDocument();
+    expect(await screen.findByText(/本周/)).toBeInTheDocument();
+
+    const periodCall = fetchMock.mock.calls.find((entry) => String(entry[0]).startsWith('/api/analysis/period'));
+    expect(periodCall).toBeTruthy();
+  });
 });

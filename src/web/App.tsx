@@ -2,7 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { MapContainer, Polyline, TileLayer } from 'react-leaflet';
 import polyline from '@mapbox/polyline';
-import type { ActivitySortBy, CalendarFilterOptions, PaginatedActivities, RunActivity, SummaryMetrics, WeeklyTrendPoint } from '../shared/types.js';
+import type {
+  ActivitySortBy,
+  CalendarFilterOptions,
+  PaginatedActivities,
+  PeriodAnalysisPeriod,
+  RunActivity,
+  SummaryMetrics,
+  WeeklyTrendPoint,
+} from '../shared/types.js';
 import { api } from './api.js';
 import { formatDateTime, formatDistance, formatDuration, formatElevation, formatHeartRate, formatPace } from './format.js';
 
@@ -139,6 +147,11 @@ export function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncState, setSyncState] = useState<LoadState>('idle');
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [periodAnalysisPeriod, setPeriodAnalysisPeriod] = useState<PeriodAnalysisPeriod>('week');
+  const [periodAnalysisState, setPeriodAnalysisState] = useState<LoadState>('idle');
+  const [periodAnalysisContent, setPeriodAnalysisContent] = useState<string | null>(null);
+  const [periodAnalysisRange, setPeriodAnalysisRange] = useState<{ from: string; to: string } | null>(null);
+  const [periodAnalysisError, setPeriodAnalysisError] = useState<string | null>(null);
 
   const { summary, trends, activities, state, error } = useQueryData(filters, page, sortBy, sortDir, refreshKey);
 
@@ -239,6 +252,21 @@ export function App() {
     } catch (syncError) {
       setSyncState('error');
       setSyncMessage(syncError instanceof Error ? syncError.message : '同步失败');
+    }
+  }
+
+  async function generatePeriodAnalysis(period: PeriodAnalysisPeriod): Promise<void> {
+    setPeriodAnalysisPeriod(period);
+    setPeriodAnalysisState('loading');
+    setPeriodAnalysisError(null);
+    try {
+      const result = await api.generatePeriodAnalysis(period);
+      setPeriodAnalysisContent(result.content);
+      setPeriodAnalysisRange({ from: result.from, to: result.to });
+      setPeriodAnalysisState('ready');
+    } catch (analysisError) {
+      setPeriodAnalysisState('error');
+      setPeriodAnalysisError(analysisError instanceof Error ? analysisError.message : '周期分析生成失败');
     }
   }
 
@@ -410,6 +438,35 @@ export function App() {
       </section>
 
       <section className="card">
+        <div className="period-analysis-header">
+          <h2>周期AI分析（实时生成）</h2>
+          <div className="period-analysis-actions">
+            <button className="analysis-btn" onClick={() => void generatePeriodAnalysis('week')} disabled={periodAnalysisState === 'loading'}>
+              按周分析
+            </button>
+            <button className="analysis-btn" onClick={() => void generatePeriodAnalysis('month')} disabled={periodAnalysisState === 'loading'}>
+              按月分析
+            </button>
+            <button className="analysis-btn" onClick={() => void generatePeriodAnalysis('year')} disabled={periodAnalysisState === 'loading'}>
+              按年分析
+            </button>
+          </div>
+        </div>
+        {periodAnalysisState === 'loading' ? <div className="empty-box">AI 正在生成周期分析...</div> : null}
+        {periodAnalysisState === 'error' ? <div className="error-banner">{periodAnalysisError ?? '周期分析生成失败'}</div> : null}
+        {periodAnalysisRange ? (
+          <p className="period-analysis-meta">
+            周期：{periodAnalysisPeriod === 'week' ? '本周' : periodAnalysisPeriod === 'month' ? '本月' : '本年'}（
+            {periodAnalysisRange.from} ~ {periodAnalysisRange.to}）
+          </p>
+        ) : null}
+        {periodAnalysisContent ? <pre className="analysis-content">{periodAnalysisContent}</pre> : null}
+        {!periodAnalysisContent && periodAnalysisState !== 'loading' ? (
+          <div className="empty-box">点击“按周/按月/按年分析”实时生成，不会保存历史结果。</div>
+        ) : null}
+      </section>
+
+      <section className="card">
         <div className="table-header">
           <h2>跑步记录</h2>
           <p>
@@ -432,6 +489,7 @@ export function App() {
                     </button>
                   </th>
                   <th>名称</th>
+                  <th>设备</th>
                   <th>
                     <button className="sort-btn" onClick={() => toggleSort('distance_m')}>
                       距离 {sortBy === 'distance_m' ? (sortDir === 'desc' ? '↓' : '↑') : ''}
@@ -453,6 +511,7 @@ export function App() {
                   <tr key={item.stravaId} onClick={() => void openActivity(item.stravaId)} className="click-row">
                     <td>{formatDateTime(item.startDateLocal)}</td>
                     <td>{item.name}</td>
+                    <td>{item.deviceName ?? '--'}</td>
                     <td>{formatDistance(item.distanceM)}</td>
                     <td>{formatDuration(item.movingTimeS)}</td>
                     <td>{formatPace(item.paceSecPerKm)}</td>
@@ -542,6 +601,7 @@ export function App() {
                       <th>距离</th>
                       <th>时间</th>
                       <th>配速</th>
+                      <th>心率</th>
                       <th>海拔变化</th>
                     </tr>
                   </thead>
@@ -552,6 +612,7 @@ export function App() {
                         <td>{formatDistance(split.distanceM)}</td>
                         <td>{formatDuration(split.elapsedTimeS)}</td>
                         <td>{formatPace(split.paceSecPerKm)}</td>
+                        <td>{formatHeartRate(split.averageHeartrate)}</td>
                         <td>{split.elevationDifferenceM == null ? '--' : `${split.elevationDifferenceM.toFixed(1)} m`}</td>
                       </tr>
                     ))}

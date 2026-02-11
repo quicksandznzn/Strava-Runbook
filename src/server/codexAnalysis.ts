@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { RunActivity } from '../shared/types.js';
+import type { PeriodAnalysisPeriod, RunActivity, SummaryMetrics } from '../shared/types.js';
 
 interface AnalyzeOptions {
   cwd?: string;
@@ -37,7 +37,8 @@ function buildPrompt(activity: RunActivity): string {
           .slice(0, 8)
           .map((split) => {
             const pace = split.paceSecPerKm ? `${Math.round(split.paceSecPerKm)}s/km` : '--';
-            return `- 第${split.splitIndex}公里: ${Math.round(split.distanceM)}m, ${split.elapsedTimeS}s, 配速${pace}`;
+            const hr = split.averageHeartrate == null ? '--' : `${Math.round(split.averageHeartrate)} bpm`;
+            return `- 第${split.splitIndex}公里: ${Math.round(split.distanceM)}m, ${split.elapsedTimeS}s, 配速${pace}, 心率${hr}`;
           })
           .join('\n')
       : '- 无分段数据';
@@ -65,13 +66,64 @@ function buildPrompt(activity: RunActivity): string {
   ].join('\n');
 }
 
-export async function analyzeActivityWithCodex(activity: RunActivity, options: AnalyzeOptions = {}): Promise<string> {
+function formatPeriodLabel(period: PeriodAnalysisPeriod): string {
+  if (period === 'week') {
+    return '周';
+  }
+  if (period === 'month') {
+    return '月';
+  }
+  return '年';
+}
+
+interface PeriodAnalysisInput {
+  period: PeriodAnalysisPeriod;
+  from: string;
+  to: string;
+  summary: SummaryMetrics;
+  recentRuns: RunActivity[];
+}
+
+function buildPeriodPrompt(input: PeriodAnalysisInput): string {
+  const recentRunsSummary =
+    input.recentRuns.length === 0
+      ? '- 本周期无跑步记录'
+      : input.recentRuns
+          .slice(0, 12)
+          .map((run) => {
+            return `- ${run.startDateLocal} | ${run.name} | ${formatDistance(run.distanceM)} | ${formatDuration(run.movingTimeS)} | ${formatPace(run.paceSecPerKm)}`;
+          })
+          .join('\n');
+
+  return [
+    `你是专业跑步教练。请基于本${formatPeriodLabel(input.period)}训练数据给出中文分析。`,
+    '输出格式必须是 Markdown，包含以下 4 个标题：',
+    '## 周期总结',
+    '## 训练亮点',
+    '## 风险提示',
+    '## 下阶段建议',
+    '每个部分 2-4 句，建议部分给 3 条可执行建议。',
+    '',
+    `分析周期: ${input.from} 到 ${input.to}`,
+    `跑步次数: ${input.summary.totalRuns}`,
+    `总里程: ${formatDistance(input.summary.totalDistanceM)}`,
+    `总移动时长: ${formatDuration(input.summary.totalMovingTimeS)}`,
+    `平均配速: ${formatPace(input.summary.averagePaceSecPerKm)}`,
+    `最快配速: ${formatPace(input.summary.bestPaceSecPerKm)}`,
+    `总爬升: ${Math.round(input.summary.totalElevationGainM)}m`,
+    `平均心率: ${input.summary.averageHeartrate == null ? '--' : Math.round(input.summary.averageHeartrate)} bpm`,
+    '',
+    '近期跑步样本:',
+    recentRunsSummary,
+  ].join('\n');
+}
+
+async function runCodexPrompt(prompt: string, options: AnalyzeOptions = {}): Promise<string> {
   const workdir = options.cwd ?? process.cwd();
   const timeoutMs = options.timeoutMs ?? 240_000;
 
   const tempDir = await mkdtemp(join(tmpdir(), 'run-strava-codex-'));
   const outputPath = join(tempDir, 'analysis.md');
-  const prompt = buildPrompt(activity);
 
   try {
     const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
@@ -120,4 +172,14 @@ export async function analyzeActivityWithCodex(activity: RunActivity, options: A
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+export async function analyzeActivityWithCodex(activity: RunActivity, options: AnalyzeOptions = {}): Promise<string> {
+  const prompt = buildPrompt(activity);
+  return runCodexPrompt(prompt, options);
+}
+
+export async function analyzePeriodWithCodex(input: PeriodAnalysisInput, options: AnalyzeOptions = {}): Promise<string> {
+  const prompt = buildPeriodPrompt(input);
+  return runCodexPrompt(prompt, options);
 }

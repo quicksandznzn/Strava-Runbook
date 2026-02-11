@@ -20,11 +20,13 @@ export interface RunSplit {
   elevationDifferenceM: number | null;
   averageSpeedMps: number | null;
   paceSecPerKm: number | null;
+  averageHeartrate: number | null;
 }
 
 export interface RunActivity {
   stravaId: number;
   name: string;
+  deviceName?: string | null;
   startDateLocal: string;
   distanceM: number;
   movingTimeS: number;
@@ -88,4 +90,14 @@ export interface SyncResult {
   failed: number;
   mode: 'full' | 'incremental';
   from?: string;
+}
+
+export type PeriodAnalysisPeriod = 'week' | 'month' | 'year';
+
+export interface PeriodAnalysisResult {
+  period: PeriodAnalysisPeriod;
+  from: string;
+  to: string;
+  content: string;
+  generatedAt: string;
 }

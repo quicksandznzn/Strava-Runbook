@@ -4,6 +4,7 @@ import type { PersistedActivity, PersistedSplit } from '../db/repository.js';
 export interface StravaSummaryActivity {
   id: number;
   name: string;
+  device_name?: string;
   sport_type?: string;
   type?: string;
   start_date_local: string;
@@ -15,11 +16,13 @@ export interface StravaSplit {
   elapsed_time?: number;
   elevation_difference?: number;
   average_speed?: number;
+  average_heartrate?: number;
 }
 
 export interface StravaDetailedActivity {
   id: number;
   name: string;
+  device_name?: string;
   start_date_local: string;
   distance: number;
   moving_time: number;
@@ -175,12 +178,14 @@ export function toPersistedActivity(detail: StravaDetailedActivity): PersistedAc
       averageSpeedMps: split.average_speed == null ? null : Number(split.average_speed),
       paceSecPerKm:
         split.average_speed != null ? speedToPace(Number(split.average_speed)) : paceFromDistanceAndTime(distanceM, elapsedTimeS),
+      averageHeartrate: split.average_heartrate == null ? null : Number(split.average_heartrate),
     };
   });
 
   return {
     stravaId: detail.id,
     name: detail.name,
+    deviceName: detail.device_name ?? null,
     startDateLocal: detail.start_date_local,
     distanceM: Number(detail.distance),
     movingTimeS: Number(detail.moving_time),

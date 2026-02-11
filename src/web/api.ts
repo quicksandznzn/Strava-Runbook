@@ -2,6 +2,8 @@ import type {
   ActivityAiAnalysis,
   CalendarFilterOptions,
   PaginatedActivities,
+  PeriodAnalysisPeriod,
+  PeriodAnalysisResult,
   RunActivity,
   SummaryMetrics,
   SyncResult,
@@ -88,6 +90,16 @@ export const api = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({}),
+    });
+  },
+
+  generatePeriodAnalysis(period: PeriodAnalysisPeriod): Promise<PeriodAnalysisResult> {
+    return requestJson('/api/analysis/period', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ period }),
     });
   },
 };

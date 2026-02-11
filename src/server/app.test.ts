@@ -13,9 +13,19 @@ const syncActivities = vi.fn(async (_input: { full?: boolean; from?: string }, _
   skippedNonRun: 0,
   failed: 0,
 }));
+const analyzePeriod = vi.fn(
+  async (_input: {
+    period: 'week' | 'month' | 'year';
+    from: string;
+    to: string;
+    summary: { totalRuns: number };
+    recentRuns: Array<{ stravaId: number }>;
+  }) => '## 周期总结\n本周期训练稳定\n\n## 训练亮点\n里程完成良好\n\n## 风险提示\n注意恢复\n\n## 下阶段建议\n1. 稳定频次',
+);
 const app = createApp(repo, {
   analyzeActivity: async (activity) =>
     `## 本次总结\n活动 ${activity.name}\n\n## 亮点\n- 节奏稳定\n\n## 风险提示\n- 注意恢复\n\n## 下次训练建议\n1. 慢跑热身`,
+  analyzePeriod,
   syncActivities,
 });
 
@@ -45,6 +55,7 @@ beforeAll(() => {
         elevationDifferenceM: 2,
         averageSpeedMps: 2.7,
         paceSecPerKm: 360,
+        averageHeartrate: 152,
       },
     ],
   });
@@ -145,6 +156,23 @@ describe('api', () => {
     expect(res.status).toBe(200);
     const ids = res.body.items.map((item: { stravaId: number }) => item.stravaId);
     expect(ids).toContain(103);
+  });
+
+  it('generates realtime period analysis without persistence', async () => {
+    const res = await request(app).post('/api/analysis/period').send({ period: 'year' });
+    expect(res.status).toBe(200);
+    expect(res.body.period).toBe('year');
+    expect(res.body.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(res.body.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(res.body.content).toContain('周期总结');
+    expect(res.body.generatedAt).toBeTruthy();
+    expect(analyzePeriod).toHaveBeenCalled();
+  });
+
+  it('returns 400 for invalid period analysis input', async () => {
+    const res = await request(app).post('/api/analysis/period').send({ period: 'quarter' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('Invalid period');
   });
 
   it('syncs latest data without duplicate inserts by using upsert', async () => {

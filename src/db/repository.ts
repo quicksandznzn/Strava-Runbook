@@ -19,11 +19,13 @@ export interface PersistedSplit {
   elevationDifferenceM: number | null;
   averageSpeedMps: number | null;
   paceSecPerKm: number | null;
+  averageHeartrate: number | null;
 }
 
 export interface PersistedActivity {
   stravaId: number;
   name: string;
+  deviceName?: string | null;
   startDateLocal: string;
   distanceM: number;
   movingTimeS: number;
@@ -81,6 +83,7 @@ function mapRunActivity(row: Record<string, unknown>): RunActivity {
   return {
     stravaId: Number(row.strava_id),
     name: String(row.name),
+    deviceName: row.device_name == null ? null : String(row.device_name),
     startDateLocal: String(row.start_date_local),
     distanceM: Number(row.distance_m),
     movingTimeS: Number(row.moving_time_s),
@@ -107,6 +110,7 @@ function mapRunSplit(row: Record<string, unknown>): RunSplit {
     elevationDifferenceM: row.elevation_difference_m == null ? null : Number(row.elevation_difference_m),
     averageSpeedMps: row.average_speed_mps == null ? null : Number(row.average_speed_mps),
     paceSecPerKm: row.pace_sec_per_km == null ? null : Number(row.pace_sec_per_km),
+    averageHeartrate: row.average_heartrate == null ? null : Number(row.average_heartrate),
   };
 }
 
@@ -114,12 +118,12 @@ export function createRepository(db: Database.Database) {
   const existsStmt = db.prepare('SELECT 1 FROM activities WHERE strava_id = ?');
   const upsertStmt = db.prepare(`
     INSERT INTO activities (
-      strava_id, name, start_date_local, distance_m, moving_time_s, elapsed_time_s,
+      strava_id, name, device_name, start_date_local, distance_m, moving_time_s, elapsed_time_s,
       total_elevation_gain_m, average_speed_mps, max_speed_mps,
       average_heartrate, max_heartrate, average_cadence, suffer_score,
       map_summary_polyline, map_polyline, raw_json, updated_at
     ) VALUES (
-      @strava_id, @name, @start_date_local, @distance_m, @moving_time_s, @elapsed_time_s,
+      @strava_id, @name, @device_name, @start_date_local, @distance_m, @moving_time_s, @elapsed_time_s,
       @total_elevation_gain_m, @average_speed_mps, @max_speed_mps,
       @average_heartrate, @max_heartrate, @average_cadence, @suffer_score,
       @map_summary_polyline, @map_polyline, @raw_json, @updated_at
@@ -127,6 +131,7 @@ export function createRepository(db: Database.Database) {
     ON CONFLICT(strava_id)
     DO UPDATE SET
       name = excluded.name,
+      device_name = excluded.device_name,
       start_date_local = excluded.start_date_local,
       distance_m = excluded.distance_m,
       moving_time_s = excluded.moving_time_s,
@@ -148,8 +153,8 @@ export function createRepository(db: Database.Database) {
   const insertSplitStmt = db.prepare(`
     INSERT INTO activity_splits (
       activity_strava_id, split_index, distance_m, elapsed_time_s,
-      elevation_difference_m, average_speed_mps, pace_sec_per_km
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const upsertAnalysisStmt = db.prepare(`
     INSERT INTO activity_ai_analysis (
@@ -167,6 +172,7 @@ export function createRepository(db: Database.Database) {
     upsertStmt.run({
       strava_id: activity.stravaId,
       name: activity.name,
+      device_name: activity.deviceName ?? null,
       start_date_local: activity.startDateLocal,
       distance_m: activity.distanceM,
       moving_time_s: activity.movingTimeS,
@@ -194,6 +200,7 @@ export function createRepository(db: Database.Database) {
         split.elevationDifferenceM,
         split.averageSpeedMps,
         split.paceSecPerKm,
+        split.averageHeartrate,
       );
     }
 
@@ -338,7 +345,7 @@ export function createRepository(db: Database.Database) {
           `
           SELECT
             split_index, distance_m, elapsed_time_s,
-            elevation_difference_m, average_speed_mps, pace_sec_per_km
+            elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate
           FROM activity_splits
           WHERE activity_strava_id = ?
           ORDER BY split_index ASC

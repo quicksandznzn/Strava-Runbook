@@ -79,6 +79,7 @@ Repository-level working rules for AI agents in this project.
 - `GET /api/activities/:id`
 - `GET /api/activities/:id/analysis`
 - `POST /api/activities/:id/analysis`
+- `POST /api/analysis/period`
 - `POST /api/sync`
 
 ## 9. Security and Data Hygiene
