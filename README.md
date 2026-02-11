@@ -2,6 +2,10 @@
 
 本地 Strava 跑步数据仪表盘。支持手动同步数据到 SQLite，并提供可视化分析与 AI 跑步解读。
 
+## Preview
+
+![Run Strava Dashboard](docs/dashboard.png)
+
 ## Features
 
 - 手动 CLI 同步 Strava 跑步活动（仅 `Run`）
