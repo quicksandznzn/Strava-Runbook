@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { MapContainer, Polyline, TileLayer } from 'react-leaflet';
 import polyline from '@mapbox/polyline';
 import type {
@@ -47,6 +47,19 @@ interface HeartRateZoneSummary {
   maxHeartRate: number | null;
   totalDurationSec: number;
   zones: HeartRateZonePoint[];
+}
+
+interface SplitPerformancePoint {
+  splitIndex: number;
+  distanceM: number;
+  elapsedTimeS: number;
+  paceSecPerKm: number | null;
+  averageHeartrate: number | null;
+  averageCadence: number | null;
+  calories: number | null;
+  elevationDifferenceM: number | null;
+  scorePercent: number | null;
+  barWidthPercent: number;
 }
 
 const HEART_RATE_ZONE_EDGES = [0.65, 0.81, 0.89, 0.97] as const;
@@ -204,6 +217,47 @@ function formatPaceTooltipValue(value: unknown): string {
   return Number.isFinite(numeric) ? formatPace(numeric) : '--';
 }
 
+function formatPaceCompact(paceSecPerKm: number | null): string {
+  const raw = formatPace(paceSecPerKm);
+  if (raw === '--') {
+    return raw;
+  }
+  return raw.replace(' /km', '');
+}
+
+function formatSplitElevationValue(value: number | null): string {
+  if (value == null) {
+    return '--';
+  }
+  return `${Math.round(value)}`;
+}
+
+function formatSplitHeartRateValue(value: number | null): string {
+  if (value == null) {
+    return '--';
+  }
+  return `${Math.round(value)}`;
+}
+
+function formatSplitCadenceValue(value: number | null): string {
+  if (value == null) {
+    return '--';
+  }
+  return `${Math.round(value)}`;
+}
+
+function formatDistanceAxisTick(distanceM: number): string {
+  if (!Number.isFinite(distanceM) || distanceM <= 0) {
+    return '0 km';
+  }
+  const km = distanceM / 1000;
+  const rounded = Math.round(km);
+  if (Math.abs(km - rounded) < 0.05) {
+    return `${rounded} km`;
+  }
+  return `${km.toFixed(1)} km`;
+}
+
 function formatElapsedAxisLabel(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds)) {
     return '--';
@@ -249,6 +303,38 @@ function normalizeTrendPoints(trendPoints: RunTrendPoint[] | undefined): DetailT
       heartrate: point.heartrate,
     }))
     .sort((a, b) => a.elapsedTimeS - b.elapsedTimeS);
+}
+
+function buildSplitPerformancePoints(splits: RunSplit[] | undefined): SplitPerformancePoint[] {
+  if (!splits || splits.length === 0) {
+    return [];
+  }
+
+  const paceValues = splits
+    .map((split) => split.paceSecPerKm)
+    .filter((pace): pace is number => typeof pace === 'number' && Number.isFinite(pace) && pace > 0);
+  const fastestPace = paceValues.length > 0 ? Math.min(...paceValues) : null;
+
+  return splits.map((split) => {
+    const pace = split.paceSecPerKm;
+    const validPace = typeof pace === 'number' && Number.isFinite(pace) && pace > 0 ? pace : null;
+    const rawScore = validPace != null && fastestPace != null ? (fastestPace / validPace) * 100 : null;
+    const scorePercent = rawScore == null ? null : Math.max(1, Math.round(rawScore));
+    const barWidthPercent = scorePercent == null ? 0 : Math.min(100, Math.max(8, scorePercent));
+
+    return {
+      splitIndex: split.splitIndex,
+      distanceM: split.distanceM,
+      elapsedTimeS: split.elapsedTimeS,
+      paceSecPerKm: split.paceSecPerKm,
+      averageHeartrate: split.averageHeartrate,
+      averageCadence: split.averageCadence,
+      calories: split.calories,
+      elevationDifferenceM: split.elevationDifferenceM,
+      scorePercent,
+      barWidthPercent,
+    };
+  });
 }
 
 function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy, sortDir: 'asc' | 'desc', refreshKey: number) {
@@ -341,23 +427,23 @@ function RunMap({ encodedPolyline }: { encodedPolyline: string }) {
 function DetailTrendTooltip({
   active,
   payload,
+  metric,
 }: {
   active?: boolean;
   payload?: Array<{ payload?: DetailTrendPoint }>;
+  metric: 'pace' | 'heartrate';
 }) {
   if (!active || !payload || payload.length === 0 || !payload[0].payload) {
     return null;
   }
 
   const point = payload[0].payload;
+  const primary = metric === 'pace' ? formatPace(point.paceSecPerKm) : formatHeartRate(point.heartrate);
+  const secondary = point.distanceM != null ? `${(point.distanceM / 1000).toFixed(2)} km` : `用时 ${formatElapsedAxisLabel(point.elapsedTimeS)}`;
   return (
-    <div className="trend-tooltip">
-      <div className="trend-tooltip-title">
-        用时 {formatElapsedAxisLabel(point.elapsedTimeS)}
-        {point.distanceM != null ? ` · ${formatDistance(point.distanceM)}` : ''}
-      </div>
-      <div>配速：{formatPace(point.paceSecPerKm)}</div>
-      <div>心率：{formatHeartRate(point.heartrate)}</div>
+    <div className={`trend-tooltip ${metric === 'pace' ? 'pace' : 'heart'}`}>
+      <div className="trend-tooltip-primary">{primary}</div>
+      <div className="trend-tooltip-secondary">{secondary}</div>
     </div>
   );
 }
@@ -397,6 +483,35 @@ export function App() {
     }
     return mapSplitTrendPoints(selectedActivity?.splits);
   }, [selectedActivity?.trendPoints, selectedActivity?.splits]);
+  const hasDistanceAxis = useMemo(
+    () => detailTrendData.some((point) => typeof point.distanceM === 'number' && Number.isFinite(point.distanceM) && point.distanceM > 0),
+    [detailTrendData],
+  );
+  const paceValueRange = useMemo(() => {
+    const paceValues = detailTrendData
+      .map((point) => point.paceSecPerKm)
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
+    if (paceValues.length === 0) {
+      return null;
+    }
+    const min = Math.min(...paceValues);
+    const max = Math.max(...paceValues);
+    const padding = Math.max(8, (max - min) * 0.12);
+    return [Math.max(0, min - padding), max + padding] as [number, number];
+  }, [detailTrendData]);
+  const heartrateValueRange = useMemo(() => {
+    const values = detailTrendData
+      .map((point) => point.heartrate)
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
+    if (values.length === 0) {
+      return null;
+    }
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const padding = Math.max(4, (max - min) * 0.2);
+    return [Math.max(0, min - padding), max + padding] as [number, number];
+  }, [detailTrendData]);
+  const splitPerformanceData = useMemo(() => buildSplitPerformancePoints(selectedActivity?.splits), [selectedActivity?.splits]);
   const heartRateZoneSummary = useMemo(() => {
     const stravaSummary = buildStravaHeartRateZoneSummary(selectedActivity?.heartRateZones, selectedActivity?.maxHeartrate ?? null);
     if (stravaSummary) {
@@ -834,25 +949,72 @@ export function App() {
                 <section className="trend-chart-card">
                   <h5>心率趋势</h5>
                   <ResponsiveContainer width="100%" height={200}>
-                    <LineChart data={detailTrendData}>
+                    <AreaChart data={detailTrendData}>
+                      <defs>
+                        <linearGradient id="heartTrendGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#f05252" stopOpacity={0.45} />
+                          <stop offset="100%" stopColor="#f05252" stopOpacity={0.08} />
+                        </linearGradient>
+                      </defs>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="elapsedTimeS" tickFormatter={formatElapsedAxisLabel} minTickGap={24} />
-                      <YAxis />
-                      <Tooltip content={<DetailTrendTooltip />} />
-                      <Line type="monotone" dataKey="heartrate" stroke="#de4d3e" name="心率" strokeWidth={2.5} connectNulls dot={false} />
-                    </LineChart>
+                      <XAxis
+                        dataKey={hasDistanceAxis ? 'distanceM' : 'elapsedTimeS'}
+                        tickFormatter={(value) =>
+                          hasDistanceAxis ? formatDistanceAxisTick(typeof value === 'number' ? value : Number(value ?? 0)) : formatElapsedAxisLabel(Number(value ?? 0))
+                        }
+                        minTickGap={24}
+                      />
+                      <YAxis domain={heartrateValueRange ?? ['auto', 'auto']} tickFormatter={(value) => `${Math.round(Number(value ?? 0))}`} />
+                      <Tooltip content={<DetailTrendTooltip metric="heartrate" />} cursor={{ stroke: '#101826', strokeWidth: 1.4 }} />
+                      <Area
+                        type="monotone"
+                        dataKey="heartrate"
+                        stroke="#d33838"
+                        fill="url(#heartTrendGradient)"
+                        strokeWidth={2.2}
+                        connectNulls
+                        dot={false}
+                        activeDot={{ r: 4.5, fill: '#101826', stroke: '#fff', strokeWidth: 1.2 }}
+                      />
+                    </AreaChart>
                   </ResponsiveContainer>
                 </section>
                 <section className="trend-chart-card">
                   <h5>配速趋势</h5>
                   <ResponsiveContainer width="100%" height={200}>
-                    <LineChart data={detailTrendData}>
+                    <AreaChart data={detailTrendData}>
+                      <defs>
+                        <linearGradient id="paceTrendGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#2d7fe2" stopOpacity={0.5} />
+                          <stop offset="100%" stopColor="#2d7fe2" stopOpacity={0.12} />
+                        </linearGradient>
+                      </defs>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="elapsedTimeS" tickFormatter={formatElapsedAxisLabel} minTickGap={24} />
-                      <YAxis />
-                      <Tooltip content={<DetailTrendTooltip />} />
-                      <Line type="monotone" dataKey="paceSecPerKm" stroke="#0e8892" name="配速" strokeWidth={2.5} connectNulls dot={false} />
-                    </LineChart>
+                      <XAxis
+                        dataKey={hasDistanceAxis ? 'distanceM' : 'elapsedTimeS'}
+                        tickFormatter={(value) =>
+                          hasDistanceAxis ? formatDistanceAxisTick(typeof value === 'number' ? value : Number(value ?? 0)) : formatElapsedAxisLabel(Number(value ?? 0))
+                        }
+                        minTickGap={24}
+                      />
+                      <YAxis
+                        domain={paceValueRange ?? ['auto', 'auto']}
+                        tickFormatter={(value) => formatPaceCompact(Number(value ?? NaN))}
+                        reversed
+                        width={44}
+                      />
+                      <Tooltip content={<DetailTrendTooltip metric="pace" />} cursor={{ stroke: '#101826', strokeWidth: 1.4 }} />
+                      <Area
+                        type="monotone"
+                        dataKey="paceSecPerKm"
+                        stroke="#2a75d2"
+                        fill="url(#paceTrendGradient)"
+                        strokeWidth={2.2}
+                        connectNulls
+                        dot={false}
+                        activeDot={{ r: 4.5, fill: '#101826', stroke: '#fff', strokeWidth: 1.2 }}
+                      />
+                    </AreaChart>
                   </ResponsiveContainer>
                 </section>
               </div>
@@ -900,6 +1062,40 @@ export function App() {
               )}
             </section>
 
+            <section className="split-performance-card">
+              <h4>分段成绩</h4>
+              {splitPerformanceData.length > 0 ? (
+                <>
+                  <div className="split-performance-header">
+                    <div>Km</div>
+                    <div>配速</div>
+                    <div />
+                    <div>海拔</div>
+                    <div>心率</div>
+                    <div>步频</div>
+                  </div>
+                  <div className="split-performance-list">
+                    {splitPerformanceData.map((split) => (
+                      <div className="split-performance-row" key={split.splitIndex}>
+                        <div className="split-performance-km">{split.splitIndex}</div>
+                        <div className="split-performance-pace">{formatPaceCompact(split.paceSecPerKm)}</div>
+                        <div className="split-performance-bar-cell">
+                          <div className="split-performance-track">
+                            <div className="split-performance-fill" style={{ width: `${split.barWidthPercent}%` }} />
+                          </div>
+                        </div>
+                        <div className="split-performance-elevation">{formatSplitElevationValue(split.elevationDifferenceM)}</div>
+                        <div className="split-performance-heartrate">{formatSplitHeartRateValue(split.averageHeartrate)}</div>
+                        <div className="split-performance-cadence">{formatSplitCadenceValue(split.averageCadence)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="empty-box">暂无分段数据</div>
+              )}
+            </section>
+
             <section className="analysis-panel">
               <div className="analysis-panel-header">
                 <h4>AI训练分析</h4>
@@ -916,42 +1112,6 @@ export function App() {
                 <div className="empty-box">点击列表中的“AI分析”按钮来生成分析。</div>
               ) : null}
             </section>
-
-            <h4>分段配速</h4>
-            {selectedActivity.splits && selectedActivity.splits.length > 0 ? (
-              <div className="table-wrap split-table">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>公里段</th>
-                      <th>距离</th>
-                      <th>时间</th>
-                      <th>配速</th>
-                      <th>心率</th>
-                      <th>卡路里</th>
-                      <th>步频</th>
-                      <th>海拔变化</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedActivity.splits.map((split) => (
-                      <tr key={split.splitIndex}>
-                        <td>{split.splitIndex}</td>
-                        <td>{formatDistance(split.distanceM)}</td>
-                        <td>{formatDuration(split.elapsedTimeS)}</td>
-                        <td>{formatPace(split.paceSecPerKm)}</td>
-                        <td>{formatHeartRate(split.averageHeartrate)}</td>
-                        <td>{formatCalories(split.calories)}</td>
-                        <td>{formatCadence(split.averageCadence)}</td>
-                        <td>{split.elevationDifferenceM == null ? '--' : `${split.elevationDifferenceM.toFixed(1)} m`}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="empty-box">暂无分段数据</div>
-            )}
           </div>
         ) : null}
       </aside>

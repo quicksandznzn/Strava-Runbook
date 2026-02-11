@@ -60,8 +60,8 @@ const svgUrls = import.meta.glob('./icons/*.svg', { query: '?url', import: 'defa
 ### URL Import
 
 ```ts
-import imgUrl from './img.png'
-// Returns resolved URL: '/src/img.png' (dev) or '/assets/img.2d8efhg.png' (build)
+import imgUrl from './dashboard.png'
+// Returns resolved URL: '/src/dashboard.png' (dev) or '/assets/img.2d8efhg.png' (build)
 ```
 
 ### Explicit URL

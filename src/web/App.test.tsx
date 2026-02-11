@@ -147,6 +147,7 @@ describe('App', () => {
     expect(await screen.findByText('心率趋势')).toBeInTheDocument();
     expect(await screen.findByText('配速趋势')).toBeInTheDocument();
     expect(await screen.findByText('心率区间')).toBeInTheDocument();
+    expect(await screen.findByText('分段成绩')).toBeInTheDocument();
     expect(await screen.findByText('来自 Strava 活动区间统计（最大心率 170 bpm）。')).toBeInTheDocument();
     expect(await screen.findByText('数据源：Strava Streams（细粒度）')).toBeInTheDocument();
 
