@@ -79,3 +79,13 @@ export interface CalendarFilterOptions {
   years: number[];
   monthsByYear: Record<string, number[]>;
 }
+
+export interface SyncResult {
+  totalFetchedRuns: number;
+  created: number;
+  updated: number;
+  skippedNonRun: number;
+  failed: number;
+  mode: 'full' | 'incremental';
+  from?: string;
+}

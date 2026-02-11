@@ -125,6 +125,7 @@ npm run test:coverage      # 覆盖率
 - `GET /api/activities/:id`
 - `GET /api/activities/:id/analysis`
 - `POST /api/activities/:id/analysis`，body: `{ "force": true|false }`
+- `POST /api/sync`：手动同步最新 Strava 跑步数据（按 `strava_id` 幂等 upsert，不会重复导入）
 
 ## Timezone
 

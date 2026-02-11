@@ -34,7 +34,7 @@ function formatPaceTooltipValue(value: unknown): string {
   return Number.isFinite(numeric) ? formatPace(numeric) : '--';
 }
 
-function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy, sortDir: 'asc' | 'desc') {
+function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy, sortDir: 'asc' | 'desc', refreshKey: number) {
   const [summary, setSummary] = useState<SummaryMetrics | null>(null);
   const [trends, setTrends] = useState<WeeklyTrendPoint[]>([]);
   const [activities, setActivities] = useState<PaginatedActivities>({ page: 1, pageSize: PAGE_SIZE, total: 0, items: [] });
@@ -78,7 +78,7 @@ function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy,
     return () => {
       cancelled = true;
     };
-  }, [filters.from, filters.to, page, sortBy, sortDir]);
+  }, [filters.from, filters.to, page, sortBy, sortDir, refreshKey]);
 
   return { summary, trends, activities, state, error };
 }
@@ -136,30 +136,26 @@ export function App() {
   const [calendarOptions, setCalendarOptions] = useState<CalendarFilterOptions>({ years: [], monthsByYear: {} });
   const [quickYear, setQuickYear] = useState<number | ''>('');
   const [quickMonth, setQuickMonth] = useState<number | ''>('');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [syncState, setSyncState] = useState<LoadState>('idle');
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-  const { summary, trends, activities, state, error } = useQueryData(filters, page, sortBy, sortDir);
+  const { summary, trends, activities, state, error } = useQueryData(filters, page, sortBy, sortDir, refreshKey);
 
   const totalPages = Math.max(1, Math.ceil(activities.total / activities.pageSize));
   const availableMonths = quickYear ? calendarOptions.monthsByYear[String(quickYear)] ?? [] : [];
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadCalendarOptions(): Promise<void> {
-      try {
-        const options = await api.getCalendarFilterOptions();
-        if (!cancelled) {
-          setCalendarOptions(options);
-        }
-      } catch {
-        if (!cancelled) {
-          setCalendarOptions({ years: [], monthsByYear: {} });
-        }
-      }
+  async function loadCalendarOptions(): Promise<void> {
+    try {
+      const options = await api.getCalendarFilterOptions();
+      setCalendarOptions(options);
+    } catch {
+      setCalendarOptions({ years: [], monthsByYear: {} });
     }
+  }
+
+  useEffect(() => {
     void loadCalendarOptions();
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   async function loadPersistedAnalysis(activityId: number): Promise<void> {
@@ -225,6 +221,25 @@ export function App() {
       return;
     }
     await generateAnalysis(activityId);
+  }
+
+  async function syncLatest(): Promise<void> {
+    setSyncState('loading');
+    setSyncMessage(null);
+    try {
+      const result = await api.syncLatest();
+      setSyncState('ready');
+      setSyncMessage(
+        `同步完成：新增 ${result.created} 条，更新 ${result.updated} 条，失败 ${result.failed} 条。` +
+          `（按 strava_id 幂等写入，不会重复导入）`,
+      );
+      setPage(1);
+      setRefreshKey((current) => current + 1);
+      await loadCalendarOptions();
+    } catch (syncError) {
+      setSyncState('error');
+      setSyncMessage(syncError instanceof Error ? syncError.message : '同步失败');
+    }
   }
 
   function toggleSort(nextSortBy: ActivitySortBy): void {
@@ -295,6 +310,10 @@ export function App() {
           >
             清空筛选
           </button>
+          <button className="ghost-btn" onClick={() => void syncLatest()} disabled={syncState === 'loading'}>
+            {syncState === 'loading' ? '同步中...' : '手动同步最新数据'}
+          </button>
+          {syncMessage ? <div className={`sync-status ${syncState === 'error' ? 'error' : 'ok'}`}>{syncMessage}</div> : null}
         </div>
       </header>
 

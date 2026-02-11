@@ -2,6 +2,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import cors from 'cors';
 import type { ActivityAiAnalysis, ActivitySortBy, RunActivity, SortDirection } from '../shared/types.js';
 import type { RunRepository } from '../db/repository.js';
+import { runSync, type SyncStats } from '../cli/sync.js';
 
 function isValidDateInput(value: string | undefined): boolean {
   if (!value) {
@@ -23,10 +24,12 @@ function normalizeSortDir(input: string | undefined): SortDirection {
 
 interface AppOptions {
   analyzeActivity?: (activity: RunActivity) => Promise<string>;
+  syncActivities?: (input: { full?: boolean; from?: string }, repository: RunRepository) => Promise<SyncStats>;
 }
 
 export function createApp(repository: RunRepository, options: AppOptions = {}) {
   const app = express();
+  let syncInProgress = false;
   app.use(cors());
   app.use(express.json());
 
@@ -167,6 +170,47 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
       res.json(payload);
     } catch (error) {
       next(error);
+    }
+  });
+
+  app.post('/api/sync', async (req, res, next) => {
+    if (syncInProgress) {
+      res.status(409).json({ error: 'Sync already in progress.' });
+      return;
+    }
+
+    try {
+      const full = Boolean(req.body?.full);
+      const requestedFrom = req.body?.from as string | undefined;
+
+      if (requestedFrom && !isValidDateInput(requestedFrom)) {
+        res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return;
+      }
+
+      let from = requestedFrom;
+      if (!full && !from) {
+        const latest = repository.listActivities({
+          page: 1,
+          pageSize: 1,
+          sortBy: 'start_date_local',
+          sortDir: 'desc',
+        }).items[0];
+        from = latest?.startDateLocal.slice(0, 10) ?? '1970-01-01';
+      }
+
+      const syncActivities = options.syncActivities ?? runSync;
+      syncInProgress = true;
+      const stats = await syncActivities({ full, from }, repository);
+      res.json({
+        ...stats,
+        mode: full ? 'full' : 'incremental',
+        from,
+      });
+    } catch (error) {
+      next(error);
+    } finally {
+      syncInProgress = false;
     }
   });
 

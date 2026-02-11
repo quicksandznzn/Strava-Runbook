@@ -83,6 +83,20 @@ h4 {
   font-size: 13px;
 }
 
+.sync-status {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  color: var(--ink-1);
+}
+
+.sync-status.ok {
+  color: #0a6a3b;
+}
+
+.sync-status.error {
+  color: #8c2014;
+}
+
 .quick-filter {
   display: grid;
   gap: 12px;

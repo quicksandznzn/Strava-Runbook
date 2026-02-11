@@ -4,6 +4,7 @@ import type {
   PaginatedActivities,
   RunActivity,
   SummaryMetrics,
+  SyncResult,
   WeeklyTrendPoint,
 } from '../shared/types.js';
 
@@ -77,6 +78,16 @@ export const api = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ force }),
+    });
+  },
+
+  syncLatest(): Promise<SyncResult> {
+    return requestJson('/api/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
     });
   },
 };

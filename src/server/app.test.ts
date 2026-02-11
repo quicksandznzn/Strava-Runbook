@@ -1,14 +1,22 @@
 import request from 'supertest';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { openDatabase } from '../db/client.js';
 import { createRepository } from '../db/repository.js';
 import { createApp } from './app.js';
 
 const db = openDatabase(':memory:');
 const repo = createRepository(db);
+const syncActivities = vi.fn(async (_input: { full?: boolean; from?: string }, _repository: typeof repo) => ({
+  totalFetchedRuns: 3,
+  created: 1,
+  updated: 2,
+  skippedNonRun: 0,
+  failed: 0,
+}));
 const app = createApp(repo, {
   analyzeActivity: async (activity) =>
     `## 本次总结\n活动 ${activity.name}\n\n## 亮点\n- 节奏稳定\n\n## 风险提示\n- 注意恢复\n\n## 下次训练建议\n1. 慢跑热身`,
+  syncActivities,
 });
 
 beforeAll(() => {
@@ -137,5 +145,67 @@ describe('api', () => {
     expect(res.status).toBe(200);
     const ids = res.body.items.map((item: { stravaId: number }) => item.stravaId);
     expect(ids).toContain(103);
+  });
+
+  it('syncs latest data without duplicate inserts by using upsert', async () => {
+    const res = await request(app).post('/api/sync').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.mode).toBe('incremental');
+    expect(res.body.from).toBe('2026-01-08');
+    expect(res.body.created).toBe(1);
+    expect(res.body.updated).toBe(2);
+    expect(syncActivities).toHaveBeenCalled();
+    expect(syncActivities.mock.calls.at(-1)?.[0]).toEqual({ full: false, from: '2026-01-08' });
+  });
+
+  it('returns 400 for invalid sync date input', async () => {
+    const res = await request(app).post('/api/sync').send({ from: '2026/01/08' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('Invalid date format');
+  });
+
+  it('prevents concurrent sync requests', async () => {
+    let notifyStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slowApp = createApp(repo, {
+      syncActivities: async () => {
+        notifyStarted();
+        await gate;
+        return {
+          totalFetchedRuns: 0,
+          created: 0,
+          updated: 0,
+          skippedNonRun: 0,
+          failed: 0,
+        };
+      },
+    });
+
+    const first = new Promise<request.Response>((resolve, reject) => {
+      request(slowApp)
+        .post('/api/sync')
+        .send({})
+        .end((error, response) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(response);
+        });
+    });
+    await started;
+    const second = await request(slowApp).post('/api/sync').send({});
+    expect(second.status).toBe(409);
+    expect(second.body.error).toContain('already in progress');
+
+    release();
+    const firstDone = await first;
+    expect(firstDone.status).toBe(200);
   });
 });
