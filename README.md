@@ -103,18 +103,6 @@ curl -X POST https://www.strava.com/api/v3/oauth/token \
 
 4. 将响应中的 `access_token` 写入 `.env` 的 `STRAVA_ACCESS_TOKEN`。
 
-## Scripts
-
-```bash
-npm run dev                # 前后端开发模式
-npm run dev:web            # 仅前端
-npm run dev:api            # 仅后端
-npm run strava:sync -- --full
-npm run build              # 类型检查 + 前端构建
-npm run test               # 测试
-npm run test:coverage      # 覆盖率
-```
-
 ## Timezone
 
 - 页面显示、日期筛选、周趋势分组统一按 **上海时区（UTC+8 / Asia/Shanghai）**。
