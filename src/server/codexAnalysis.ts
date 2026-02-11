@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { RunActivity } from '../shared/types.js';
+import type { RunActivity, TrainingPlan } from '../shared/types.js';
 
 interface AnalyzeOptions {
   cwd?: string;
@@ -30,7 +30,7 @@ function formatPace(paceSecPerKm: number | null): string {
   return `${min}:${String(sec).padStart(2, '0')} /km`;
 }
 
-function buildPrompt(activity: RunActivity): string {
+function buildPrompt(activity: RunActivity, plan?: TrainingPlan): string {
   const splitsSummary =
     activity.splits && activity.splits.length > 0
       ? activity.splits
@@ -42,42 +42,66 @@ function buildPrompt(activity: RunActivity): string {
           .join('\n')
       : '- 无分段数据';
 
-  return [
+  const parts = [
     '你是专业跑步教练。请基于这次跑步数据给出中文分析。',
-    '输出格式必须是 Markdown，包含以下 4 个标题：',
+    plan
+      ? '输出格式必须是 Markdown，包含以下 5 个标题：'
+      : '输出格式必须是 Markdown，包含以下 4 个标题：',
     '## 本次总结',
     '## 亮点',
     '## 风险提示',
-    '## 下次训练建议',
-    '每个部分 2-4 句，建议部分给 3 条可执行建议。',
-    '',
-    `活动名称: ${activity.name}`,
-    `开始时间: ${activity.startDateLocal}`,
-    `距离: ${formatDistance(activity.distanceM)}`,
-    `移动时长: ${formatDuration(activity.movingTimeS)}`,
-    `配速: ${formatPace(activity.paceSecPerKm)}`,
-    `海拔爬升: ${Math.round(activity.totalElevationGainM)}m`,
-    `平均心率: ${activity.averageHeartrate == null ? '--' : Math.round(activity.averageHeartrate)} bpm`,
-    `最高心率: ${activity.maxHeartrate == null ? '--' : Math.round(activity.maxHeartrate)} bpm`,
-    '',
-    '分段摘要:',
-    splitsSummary,
-  ].join('\n');
+  ];
+
+  if (plan) {
+    parts.push('## 计划完成度');
+  }
+
+  parts.push('## 下次训练建议');
+  parts.push('每个部分 2-4 句，建议部分给 3 条可执行建议。');
+  parts.push('');
+  parts.push(`活动名称: ${activity.name}`);
+  parts.push(`开始时间: ${activity.startDateLocal}`);
+  parts.push(`距离: ${formatDistance(activity.distanceM)}`);
+  parts.push(`移动时长: ${formatDuration(activity.movingTimeS)}`);
+  parts.push(`配速: ${formatPace(activity.paceSecPerKm)}`);
+  parts.push(`海拔爬升: ${Math.round(activity.totalElevationGainM)}m`);
+  parts.push(`平均心率: ${activity.averageHeartrate == null ? '--' : Math.round(activity.averageHeartrate)} bpm`);
+  parts.push(`最高心率: ${activity.maxHeartrate == null ? '--' : Math.round(activity.maxHeartrate)} bpm`);
+  parts.push('');
+  parts.push('分段摘要:');
+  parts.push(splitsSummary);
+
+  if (plan) {
+    parts.push('');
+    parts.push('【训练计划】');
+    parts.push(plan.planText);
+    parts.push('');
+    parts.push('请在"## 计划完成度"部分评估：');
+    parts.push('- 计划目标 vs 实际完成');
+    parts.push('- 完成率（距离、配速等）');
+    parts.push('- 调整建议');
+  }
+
+  return parts.join('\n');
 }
 
-export async function analyzeActivityWithCodex(activity: RunActivity, options: AnalyzeOptions = {}): Promise<string> {
+export async function analyzeActivityWithCodex(
+  activity: RunActivity,
+  plan?: TrainingPlan,
+  options: AnalyzeOptions = {},
+): Promise<string> {
   const workdir = options.cwd ?? process.cwd();
   const timeoutMs = options.timeoutMs ?? 240_000;
 
   const tempDir = await mkdtemp(join(tmpdir(), 'run-strava-codex-'));
   const outputPath = join(tempDir, 'analysis.md');
-  const prompt = buildPrompt(activity);
+  const prompt = buildPrompt(activity, plan);
 
   try {
     const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
       const child = spawn(
         'codex',
-        ['exec', '--skip-git-repo-check', '-C', workdir, '-o', outputPath, prompt],
+        ['exec', '--skip-git-repo-check', '-C', workdir, '--output-last-message', outputPath, prompt],
         {
           stdio: ['ignore', 'ignore', 'pipe'],
         },

@@ -12,6 +12,9 @@
 - 单次详情：路线地图、分段配速
 - AI 分析：调用本机 Codex CLI 生成训练建议
 - AI 分析持久化：每次生成写入 SQLite，重新生成覆盖上一次
+- 训练日历：月视图展示训练计划和完成状态
+- 训练计划管理：添加、编辑、删除每日训练计划
+- 计划完成度：AI 分析结合训练计划评估完成情况
 
 ## Tech Stack
 
@@ -113,6 +116,8 @@ npm run test:coverage      # 覆盖率
 
 ## API
 
+### Activities & Analysis
+
 - `GET /api/health`
 - `GET /api/summary?from=YYYY-MM-DD&to=YYYY-MM-DD`
 - `GET /api/trends/weekly?from=YYYY-MM-DD&to=YYYY-MM-DD`
@@ -121,6 +126,25 @@ npm run test:coverage      # 覆盖率
 - `GET /api/activities/:id`
 - `GET /api/activities/:id/analysis`
 - `POST /api/activities/:id/analysis`，body: `{ "force": true|false }`
+
+### Training Plans
+
+- `POST /api/training-plans` - 创建训练计划
+  - Body: `{ "date": "YYYY-MM-DD", "planText": "训练内容" }`
+  - Returns: `201` 成功，`409` 日期冲突
+- `GET /api/training-plans/:date` - 获取指定日期的训练计划
+  - Returns: `200` 成功，`404` 未找到
+- `PUT /api/training-plans/:date` - 更新训练计划
+  - Body: `{ "planText": "新内容" }`
+  - Returns: `200` 成功，`404` 未找到
+- `DELETE /api/training-plans/:date` - 删除训练计划
+  - Returns: `200` (幂等操作)
+- `GET /api/training-plans?from=YYYY-MM-DD&to=YYYY-MM-DD` - 获取日期范围内的训练计划
+
+### Calendar
+
+- `GET /api/calendar/daily-summary?year=2026&month=1` - 获取月度日历摘要
+  - 包含每日的训练计划、活动记录、完成状态（completed/missed/no_plan）
 
 ## Timezone
 
@@ -134,7 +158,21 @@ npm run test:coverage      # 覆盖率
 codex login
 ```
 
-- 若未安装/未登录，点击“AI分析”会返回后端错误提示。
+- 若未安装/未登录，点击"AI分析"会返回后端错误提示。
+- AI 分析会自动查询当日训练计划，如果存在计划，分析结果会包含"计划完成度"部分，评估实际完成与计划目标的对比。
+
+## Training Calendar Usage
+
+1. 访问"训练日历"页面查看月度视图
+2. 点击任意日期打开侧边栏，查看该日的训练计划和活动记录
+3. 在侧边栏中可以：
+   - 添加或编辑训练计划
+   - 查看当日完成的活动
+   - 删除训练计划
+4. 日历格子显示完成状态：
+   - 绿色：已完成计划
+   - 红色：有计划但未完成
+   - 灰色：无计划
 
 ## Testing
 
@@ -142,6 +180,12 @@ codex login
 npm test
 npm run test:coverage
 ```
+
+测试覆盖：
+- 后端 API endpoints（app.test.ts）
+- Repository 数据层（repository.test.ts）
+- React 组件（CalendarPage.test.tsx, TrainingPlanEditor.test.tsx）
+- CLI 工具（strava.test.ts）
 
 ## Upload to GitHub Checklist
 

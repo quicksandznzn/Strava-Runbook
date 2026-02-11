@@ -3,11 +3,14 @@ import type {
   ActivityAiAnalysis,
   ActivityQuery,
   CalendarFilterOptions,
+  CompletionStatus,
+  DailySummary,
   DateRangeQuery,
   PaginatedActivities,
   RunActivity,
   RunSplit,
   SummaryMetrics,
+  TrainingPlan,
   WeeklyTrendPoint,
 } from '../shared/types.js';
 import { paceFromDistanceAndTime } from '../shared/units.js';
@@ -53,6 +56,13 @@ const DEFAULT_QUERY: ActivityQuery = {
   sortDir: 'desc',
 };
 
+function formatLocalDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function buildDateWhere(range: DateRangeQuery): WhereClauseResult {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
@@ -64,6 +74,30 @@ function buildDateWhere(range: DateRangeQuery): WhereClauseResult {
 
   if (range.to) {
     clauses.push('date(start_date_local) <= date(?)');
+    params.push(range.to);
+  }
+
+  if (clauses.length === 0) {
+    return { clause: '', params };
+  }
+
+  return {
+    clause: `WHERE ${clauses.join(' AND ')}`,
+    params,
+  };
+}
+
+function buildPlanDateWhere(range: DateRangeQuery): WhereClauseResult {
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (range.from) {
+    clauses.push('date(date) >= date(?)');
+    params.push(range.from);
+  }
+
+  if (range.to) {
+    clauses.push('date(date) <= date(?)');
     params.push(range.to);
   }
 
@@ -423,6 +457,166 @@ export function createRepository(db: Database.Database) {
       }
 
       return { years, monthsByYear };
+    },
+
+    createTrainingPlan(date: string, planText: string): TrainingPlan {
+      const now = new Date().toISOString();
+      const result = db
+        .prepare(
+          `
+          INSERT INTO training_plans (date, plan_text, created_at, updated_at)
+          VALUES (?, ?, ?, ?)
+        `,
+        )
+        .run(date, planText, now, now);
+
+      return {
+        id: Number(result.lastInsertRowid),
+        date,
+        planText,
+        createdAt: now,
+        updatedAt: now,
+      };
+    },
+
+    getTrainingPlanByDate(date: string): TrainingPlan | null {
+      const row = db
+        .prepare(
+          `
+          SELECT id, date, plan_text, created_at, updated_at
+          FROM training_plans
+          WHERE date = ?
+        `,
+        )
+        .get(date) as Record<string, unknown> | undefined;
+
+      if (!row) {
+        return null;
+      }
+
+      return {
+        id: Number(row.id),
+        date: String(row.date),
+        planText: String(row.plan_text),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      };
+    },
+
+    updateTrainingPlan(date: string, planText: string): TrainingPlan | null {
+      const now = new Date().toISOString();
+      const result = db
+        .prepare(
+          `
+          UPDATE training_plans
+          SET plan_text = ?, updated_at = ?
+          WHERE date = ?
+        `,
+        )
+        .run(planText, now, date);
+
+      if (result.changes === 0) {
+        return null;
+      }
+
+      return this.getTrainingPlanByDate(date);
+    },
+
+    deleteTrainingPlan(date: string): boolean {
+      const result = db
+        .prepare(
+          `
+          DELETE FROM training_plans
+          WHERE date = ?
+        `,
+        )
+        .run(date);
+
+      return result.changes > 0;
+    },
+
+    getTrainingPlansByRange(from?: string, to?: string): TrainingPlan[] {
+      const where = buildPlanDateWhere({ from, to });
+      const rows = db
+        .prepare(
+          `
+          SELECT id, date, plan_text, created_at, updated_at
+          FROM training_plans
+          ${where.clause}
+          ORDER BY date DESC
+        `,
+        )
+        .all(...where.params) as Array<Record<string, unknown>>;
+
+      return rows.map((row) => ({
+        id: Number(row.id),
+        date: String(row.date),
+        planText: String(row.plan_text),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      }));
+    },
+
+    getDailySummary(year: number, month: number): DailySummary[] {
+      // 生成月份的所有日期
+      const firstDay = new Date(year, month - 1, 1);
+      const lastDay = new Date(year, month, 0);
+      const days: string[] = [];
+
+      for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
+        days.push(formatLocalDateKey(d));
+      }
+
+      if (days.length === 0) {
+        return [];
+      }
+
+      const from = days[0];
+      const to = days[days.length - 1];
+
+      // 批量查询计划和活动
+      const plans = this.getTrainingPlansByRange(from, to);
+      const activities = this.listActivities({
+        from,
+        to,
+        page: 1,
+        pageSize: 1000,
+        sortBy: 'start_date_local',
+        sortDir: 'asc',
+      });
+
+      // 组装每日摘要
+      const planMap = new Map(plans.map((p) => [p.date, p]));
+      const activityMap = new Map<string, RunActivity[]>();
+
+      for (const activity of activities.items) {
+        const date = activity.startDateLocal.split('T')[0];
+        if (!activityMap.has(date)) {
+          activityMap.set(date, []);
+        }
+        activityMap.get(date)!.push(activity);
+      }
+
+      return days.map((date) => {
+        const plan = planMap.get(date) ?? null;
+        const dayActivities = activityMap.get(date) ?? [];
+
+        let status: CompletionStatus;
+        if (!plan) {
+          status = 'no_plan';
+        } else if (dayActivities.length === 0) {
+          status = 'missed';
+        } else {
+          status = 'completed';
+        }
+
+        return {
+          date,
+          plan,
+          activities: dayActivities,
+          completionStatus: status,
+        };
+      });
     },
   };
 }
