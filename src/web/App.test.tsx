@@ -9,6 +9,13 @@ function createResponse(data: unknown): Response {
   });
 }
 
+function createErrorResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 describe('App', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -46,6 +53,9 @@ describe('App', () => {
             '2026': [1],
           },
         });
+      }
+      if (url.startsWith('/api/activities/1/analysis')) {
+        return createErrorResponse(404, { error: 'No analysis yet for this activity.' });
       }
       if (url.startsWith('/api/activities/1')) {
         return createResponse({
@@ -193,5 +203,97 @@ describe('App', () => {
       const calls = fetchMock.mock.calls.map((entry) => String(entry[0]));
       expect(calls.some((url) => url.includes('from=2026-02-01') && url.includes('to=2026-02-28'))).toBe(true);
     });
+  });
+
+  it('loads persisted analysis when opening detail', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/summary')) {
+        return createResponse({
+          totalRuns: 1,
+          totalDistanceM: 10000,
+          totalMovingTimeS: 3600,
+          totalElevationGainM: 100,
+          averagePaceSecPerKm: 360,
+          bestPaceSecPerKm: 340,
+          averageHeartrate: 150,
+        });
+      }
+      if (url.startsWith('/api/trends/weekly')) {
+        return createResponse([]);
+      }
+      if (url.startsWith('/api/filters/calendar')) {
+        return createResponse({
+          years: [2026],
+          monthsByYear: {
+            '2026': [1],
+          },
+        });
+      }
+      if (url.startsWith('/api/activities/1/analysis')) {
+        return createResponse({
+          activityId: 1,
+          content: '## 本次总结\\n状态不错',
+          generatedAt: '2026-01-01T09:00:00Z',
+          cached: true,
+        });
+      }
+      if (url.startsWith('/api/activities/1')) {
+        return createResponse({
+          stravaId: 1,
+          name: 'Morning Run',
+          startDateLocal: '2026-01-01T08:00:00Z',
+          distanceM: 10000,
+          movingTimeS: 3600,
+          elapsedTimeS: 3660,
+          totalElevationGainM: 100,
+          averageSpeedMps: 2.7,
+          maxSpeedMps: 4,
+          paceSecPerKm: 360,
+          averageHeartrate: 150,
+          maxHeartrate: 170,
+          averageCadence: 80,
+          sufferScore: 50,
+          mapSummaryPolyline: null,
+          mapPolyline: null,
+          updatedAt: '2026-01-01T09:00:00Z',
+          splits: [],
+        });
+      }
+
+      return createResponse({
+        page: 1,
+        pageSize: 20,
+        total: 1,
+        items: [
+          {
+            stravaId: 1,
+            name: 'Morning Run',
+            startDateLocal: '2026-01-01T08:00:00Z',
+            distanceM: 10000,
+            movingTimeS: 3600,
+            elapsedTimeS: 3660,
+            totalElevationGainM: 100,
+            averageSpeedMps: 2.7,
+            maxSpeedMps: 4,
+            paceSecPerKm: 360,
+            averageHeartrate: 150,
+            maxHeartrate: 170,
+            averageCadence: 80,
+            sufferScore: 50,
+            mapSummaryPolyline: null,
+            mapPolyline: null,
+            updatedAt: '2026-01-01T09:00:00Z',
+          },
+        ],
+      });
+    });
+
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    render(<App />);
+
+    fireEvent.click(await screen.findByText('Morning Run'));
+
+    expect(await screen.findByText(/状态不错/)).toBeInTheDocument();
   });
 });

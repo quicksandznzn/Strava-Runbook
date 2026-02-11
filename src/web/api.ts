@@ -58,8 +58,16 @@ export const api = {
     return requestJson(`/api/activities/${id}`);
   },
 
-  getActivityAnalysis(id: number): Promise<ActivityAiAnalysis> {
-    return requestJson(`/api/activities/${id}/analysis`);
+  async getActivityAnalysis(id: number): Promise<ActivityAiAnalysis | null> {
+    const response = await fetch(`/api/activities/${id}/analysis`);
+    if (response.status === 404) {
+      return null;
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`${response.status}: ${text}`);
+    }
+    return (await response.json()) as ActivityAiAnalysis;
   },
 
   generateActivityAnalysis(id: number, force = false): Promise<ActivityAiAnalysis> {

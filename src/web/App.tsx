@@ -162,7 +162,28 @@ export function App() {
     };
   }, []);
 
-  async function openActivity(id: number): Promise<RunActivity | null> {
+  async function loadPersistedAnalysis(activityId: number): Promise<void> {
+    setAnalysisStateById((current) => ({ ...current, [activityId]: 'loading' }));
+    setAnalysisErrorById((current) => ({ ...current, [activityId]: null }));
+
+    try {
+      const response = await api.getActivityAnalysis(activityId);
+      if (response) {
+        setAnalysisById((current) => ({ ...current, [activityId]: response.content }));
+        setAnalysisStateById((current) => ({ ...current, [activityId]: 'ready' }));
+      } else {
+        setAnalysisStateById((current) => ({ ...current, [activityId]: 'idle' }));
+      }
+    } catch (analysisError) {
+      setAnalysisStateById((current) => ({ ...current, [activityId]: 'error' }));
+      setAnalysisErrorById((current) => ({
+        ...current,
+        [activityId]: analysisError instanceof Error ? analysisError.message : '分析数据加载失败',
+      }));
+    }
+  }
+
+  async function openActivity(id: number, loadAnalysis = true): Promise<RunActivity | null> {
     setDrawerState('loading');
     setDrawerError(null);
 
@@ -170,6 +191,9 @@ export function App() {
       const detail = await api.getActivity(id);
       setSelectedActivity(detail);
       setDrawerState('ready');
+      if (loadAnalysis) {
+        void loadPersistedAnalysis(id);
+      }
       return detail;
     } catch (detailError) {
       setDrawerState('error');
@@ -196,7 +220,7 @@ export function App() {
   }
 
   async function openAndGenerateAnalysis(activityId: number): Promise<void> {
-    const detail = await openActivity(activityId);
+    const detail = await openActivity(activityId, false);
     if (!detail) {
       return;
     }
