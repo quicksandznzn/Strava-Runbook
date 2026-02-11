@@ -6,6 +6,8 @@ import type {
   DateRangeQuery,
   PaginatedActivities,
   RunActivity,
+  RunHeartRateZone,
+  RunTrendPoint,
   RunSplit,
   SummaryMetrics,
   WeeklyTrendPoint,
@@ -20,6 +22,23 @@ export interface PersistedSplit {
   averageSpeedMps: number | null;
   paceSecPerKm: number | null;
   averageHeartrate: number | null;
+  averageCadence: number | null;
+  calories: number | null;
+}
+
+export interface PersistedHeartRateZone {
+  zone: string;
+  minBpm: number;
+  maxBpm: number | null;
+  timeS: number;
+  percentage: number | null;
+}
+
+export interface PersistedTrendPoint {
+  elapsedTimeS: number;
+  distanceM: number | null;
+  paceSecPerKm: number | null;
+  heartrate: number | null;
 }
 
 export interface PersistedActivity {
@@ -36,9 +55,12 @@ export interface PersistedActivity {
   averageHeartrate: number | null;
   maxHeartrate: number | null;
   averageCadence: number | null;
+  calories?: number | null;
   sufferScore: number | null;
   mapSummaryPolyline: string | null;
   mapPolyline: string | null;
+  heartRateZones?: PersistedHeartRateZone[];
+  trendPoints?: PersistedTrendPoint[];
   rawJson: string;
   splits: PersistedSplit[];
 }
@@ -80,10 +102,18 @@ function buildDateWhere(range: DateRangeQuery): WhereClauseResult {
 }
 
 function mapRunActivity(row: Record<string, unknown>): RunActivity {
+  const athleteMaxHeartrate =
+    row.athlete_max_heartrate == null
+      ? null
+      : Number.isFinite(Number(row.athlete_max_heartrate))
+        ? Number(row.athlete_max_heartrate)
+        : null;
+
   return {
     stravaId: Number(row.strava_id),
     name: String(row.name),
     deviceName: row.device_name == null ? null : String(row.device_name),
+    athleteMaxHeartrate,
     startDateLocal: String(row.start_date_local),
     distanceM: Number(row.distance_m),
     movingTimeS: Number(row.moving_time_s),
@@ -95,9 +125,12 @@ function mapRunActivity(row: Record<string, unknown>): RunActivity {
     averageHeartrate: row.average_heartrate == null ? null : Number(row.average_heartrate),
     maxHeartrate: row.max_heartrate == null ? null : Number(row.max_heartrate),
     averageCadence: row.average_cadence == null ? null : Number(row.average_cadence),
+    calories: row.calories == null ? null : Number(row.calories),
     sufferScore: row.suffer_score == null ? null : Number(row.suffer_score),
     mapSummaryPolyline: row.map_summary_polyline == null ? null : String(row.map_summary_polyline),
     mapPolyline: row.map_polyline == null ? null : String(row.map_polyline),
+    heartRateZones: parseHeartRateZones(row.heartrate_zones_json),
+    trendPoints: parseTrendPoints(row.trend_points_json),
     updatedAt: String(row.updated_at),
   };
 }
@@ -111,7 +144,124 @@ function mapRunSplit(row: Record<string, unknown>): RunSplit {
     averageSpeedMps: row.average_speed_mps == null ? null : Number(row.average_speed_mps),
     paceSecPerKm: row.pace_sec_per_km == null ? null : Number(row.pace_sec_per_km),
     averageHeartrate: row.average_heartrate == null ? null : Number(row.average_heartrate),
+    averageCadence: row.average_cadence == null ? null : Number(row.average_cadence),
+    calories: row.calories == null ? null : Number(row.calories),
   };
+}
+
+function parseHeartRateZones(rawValue: unknown): RunHeartRateZone[] | undefined {
+  if (typeof rawValue !== 'string' || rawValue.trim() === '') {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const zones: RunHeartRateZone[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+
+      const object = item as Record<string, unknown>;
+      const zone = typeof object.zone === 'string' ? object.zone : '';
+      const minBpm = Number(object.minBpm);
+      const timeS = Number(object.timeS);
+      const maxRaw = object.maxBpm;
+      const maxBpm =
+        maxRaw == null
+          ? null
+          : Number.isFinite(Number(maxRaw))
+            ? Number(maxRaw)
+            : null;
+      const percentageRaw = object.percentage;
+      const percentage =
+        percentageRaw == null
+          ? null
+          : Number.isFinite(Number(percentageRaw))
+            ? Number(percentageRaw)
+            : null;
+
+      if (!zone || !Number.isFinite(minBpm) || !Number.isFinite(timeS)) {
+        continue;
+      }
+
+      zones.push({
+        zone,
+        minBpm,
+        maxBpm,
+        timeS,
+        percentage,
+      });
+    }
+
+    return zones.length > 0 ? zones : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTrendPoints(rawValue: unknown): RunTrendPoint[] | undefined {
+  if (typeof rawValue !== 'string' || rawValue.trim() === '') {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const points: RunTrendPoint[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+
+      const object = item as Record<string, unknown>;
+      const elapsedTimeS = Number(object.elapsedTimeS);
+      const distanceRaw = object.distanceM;
+      const paceRaw = object.paceSecPerKm;
+      const heartrateRaw = object.heartrate;
+      const distanceM =
+        distanceRaw == null
+          ? null
+          : Number.isFinite(Number(distanceRaw))
+            ? Number(distanceRaw)
+            : null;
+      const paceSecPerKm =
+        paceRaw == null
+          ? null
+          : Number.isFinite(Number(paceRaw))
+            ? Number(paceRaw)
+            : null;
+      const heartrate =
+        heartrateRaw == null
+          ? null
+          : Number.isFinite(Number(heartrateRaw))
+            ? Number(heartrateRaw)
+            : null;
+
+      if (!Number.isFinite(elapsedTimeS) || elapsedTimeS < 0) {
+        continue;
+      }
+
+      points.push({
+        elapsedTimeS: Math.round(elapsedTimeS),
+        distanceM,
+        paceSecPerKm,
+        heartrate,
+      });
+    }
+
+    points.sort((a, b) => a.elapsedTimeS - b.elapsedTimeS);
+    return points.length > 0 ? points : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function createRepository(db: Database.Database) {
@@ -120,13 +270,13 @@ export function createRepository(db: Database.Database) {
     INSERT INTO activities (
       strava_id, name, device_name, start_date_local, distance_m, moving_time_s, elapsed_time_s,
       total_elevation_gain_m, average_speed_mps, max_speed_mps,
-      average_heartrate, max_heartrate, average_cadence, suffer_score,
-      map_summary_polyline, map_polyline, raw_json, updated_at
+      average_heartrate, max_heartrate, average_cadence, calories, suffer_score,
+      map_summary_polyline, map_polyline, heartrate_zones_json, trend_points_json, raw_json, updated_at
     ) VALUES (
       @strava_id, @name, @device_name, @start_date_local, @distance_m, @moving_time_s, @elapsed_time_s,
       @total_elevation_gain_m, @average_speed_mps, @max_speed_mps,
-      @average_heartrate, @max_heartrate, @average_cadence, @suffer_score,
-      @map_summary_polyline, @map_polyline, @raw_json, @updated_at
+      @average_heartrate, @max_heartrate, @average_cadence, @calories, @suffer_score,
+      @map_summary_polyline, @map_polyline, @heartrate_zones_json, @trend_points_json, @raw_json, @updated_at
     )
     ON CONFLICT(strava_id)
     DO UPDATE SET
@@ -142,9 +292,12 @@ export function createRepository(db: Database.Database) {
       average_heartrate = excluded.average_heartrate,
       max_heartrate = excluded.max_heartrate,
       average_cadence = excluded.average_cadence,
+      calories = excluded.calories,
       suffer_score = excluded.suffer_score,
       map_summary_polyline = excluded.map_summary_polyline,
       map_polyline = excluded.map_polyline,
+      heartrate_zones_json = excluded.heartrate_zones_json,
+      trend_points_json = excluded.trend_points_json,
       raw_json = excluded.raw_json,
       updated_at = excluded.updated_at
   `);
@@ -153,8 +306,8 @@ export function createRepository(db: Database.Database) {
   const insertSplitStmt = db.prepare(`
     INSERT INTO activity_splits (
       activity_strava_id, split_index, distance_m, elapsed_time_s,
-      elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate, average_cadence, calories
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const upsertAnalysisStmt = db.prepare(`
     INSERT INTO activity_ai_analysis (
@@ -183,9 +336,12 @@ export function createRepository(db: Database.Database) {
       average_heartrate: activity.averageHeartrate,
       max_heartrate: activity.maxHeartrate,
       average_cadence: activity.averageCadence,
+      calories: activity.calories ?? null,
       suffer_score: activity.sufferScore,
       map_summary_polyline: activity.mapSummaryPolyline,
       map_polyline: activity.mapPolyline,
+      heartrate_zones_json: activity.heartRateZones ? JSON.stringify(activity.heartRateZones) : null,
+      trend_points_json: activity.trendPoints ? JSON.stringify(activity.trendPoints) : null,
       raw_json: activity.rawJson,
       updated_at: new Date().toISOString(),
     });
@@ -201,6 +357,8 @@ export function createRepository(db: Database.Database) {
         split.averageSpeedMps,
         split.paceSecPerKm,
         split.averageHeartrate,
+        split.averageCadence,
+        split.calories,
       );
     }
 
@@ -305,7 +463,24 @@ export function createRepository(db: Database.Database) {
         .prepare(
           `
           SELECT
-            *,
+            strava_id,
+            name,
+            device_name,
+            start_date_local,
+            distance_m,
+            moving_time_s,
+            elapsed_time_s,
+            total_elevation_gain_m,
+            average_speed_mps,
+            max_speed_mps,
+            average_heartrate,
+            max_heartrate,
+            average_cadence,
+            calories,
+            suffer_score,
+            map_summary_polyline,
+            map_polyline,
+            updated_at,
             (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km
           FROM activities
           ${where.clause}
@@ -329,7 +504,8 @@ export function createRepository(db: Database.Database) {
           `
           SELECT
             *,
-            (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km
+            (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km,
+            (SELECT MAX(max_heartrate) FROM activities) AS athlete_max_heartrate
           FROM activities
           WHERE strava_id = ?
         `,
@@ -345,7 +521,7 @@ export function createRepository(db: Database.Database) {
           `
           SELECT
             split_index, distance_m, elapsed_time_s,
-            elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate
+            elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate, average_cadence, calories
           FROM activity_splits
           WHERE activity_strava_id = ?
           ORDER BY split_index ASC

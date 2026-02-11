@@ -58,7 +58,10 @@ cp .env.example .env
 STRAVA_ACCESS_TOKEN=your_strava_access_token
 STRAVA_DB_PATH=data/strava.db
 PORT=8787
+ATHLETE_MAX_HEARTRATE=186
 ```
+
+`ATHLETE_MAX_HEARTRATE` 用于心率区间估算基准（默认 `186`）。
 
 ### 3) 同步数据
 

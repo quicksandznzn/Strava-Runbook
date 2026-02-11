@@ -63,3 +63,17 @@ export function formatHeartRate(value: number | null): string {
   }
   return `${Math.round(value)} bpm`;
 }
+
+export function formatCadence(value: number | null): string {
+  if (value == null) {
+    return '--';
+  }
+  return `${Math.round(value)} spm`;
+}
+
+export function formatCalories(value: number | null): string {
+  if (value == null) {
+    return '--';
+  }
+  return `${Math.round(value)} kcal`;
+}

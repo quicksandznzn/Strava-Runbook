@@ -30,9 +30,12 @@ export function applySchema(db: Database.Database): void {
       average_heartrate REAL,
       max_heartrate REAL,
       average_cadence REAL,
+      calories REAL,
       suffer_score REAL,
       map_summary_polyline TEXT,
       map_polyline TEXT,
+      heartrate_zones_json TEXT,
+      trend_points_json TEXT,
       raw_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -47,6 +50,8 @@ export function applySchema(db: Database.Database): void {
       average_speed_mps REAL,
       pace_sec_per_km REAL,
       average_heartrate REAL,
+      average_cadence REAL,
+      calories REAL,
       FOREIGN KEY(activity_strava_id) REFERENCES activities(strava_id) ON DELETE CASCADE,
       UNIQUE(activity_strava_id, split_index)
     );
@@ -66,5 +71,10 @@ export function applySchema(db: Database.Database): void {
 
   // Backward-compatible migration for existing local databases.
   ensureColumn(db, 'activities', 'device_name', 'TEXT');
+  ensureColumn(db, 'activities', 'calories', 'REAL');
+  ensureColumn(db, 'activities', 'heartrate_zones_json', 'TEXT');
+  ensureColumn(db, 'activities', 'trend_points_json', 'TEXT');
   ensureColumn(db, 'activity_splits', 'average_heartrate', 'REAL');
+  ensureColumn(db, 'activity_splits', 'average_cadence', 'REAL');
+  ensureColumn(db, 'activity_splits', 'calories', 'REAL');
 }

@@ -8,11 +8,14 @@ import type {
   PaginatedActivities,
   PeriodAnalysisPeriod,
   RunActivity,
+  RunHeartRateZone,
+  RunTrendPoint,
+  RunSplit,
   SummaryMetrics,
   WeeklyTrendPoint,
 } from '../shared/types.js';
 import { api } from './api.js';
-import { formatDateTime, formatDistance, formatDuration, formatElevation, formatHeartRate, formatPace } from './format.js';
+import { formatCadence, formatCalories, formatDateTime, formatDistance, formatDuration, formatElevation, formatHeartRate, formatPace } from './format.js';
 
 const PAGE_SIZE = 20;
 
@@ -21,6 +24,165 @@ type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 interface DateFilter {
   from?: string;
   to?: string;
+}
+
+interface DetailTrendPoint {
+  elapsedTimeS: number;
+  distanceM: number | null;
+  paceSecPerKm: number | null;
+  heartrate: number | null;
+}
+
+interface HeartRateZonePoint {
+  zone: string;
+  minBpm: number;
+  maxBpm: number | null;
+  durationSec: number;
+  ratio: number;
+  color: string;
+}
+
+interface HeartRateZoneSummary {
+  source: 'strava' | 'estimated';
+  maxHeartRate: number | null;
+  totalDurationSec: number;
+  zones: HeartRateZonePoint[];
+}
+
+const HEART_RATE_ZONE_EDGES = [0.65, 0.81, 0.89, 0.97] as const;
+const HEART_RATE_ZONE_COLORS = ['#ef8080', '#f06b6b', '#f14f4f', '#d93a3a', '#a82424'] as const;
+
+function resolveMaxHeartRate(splits: RunSplit[] | undefined, maxHeartRate: number | null): number {
+  const maxFromDetail = typeof maxHeartRate === 'number' && Number.isFinite(maxHeartRate) ? maxHeartRate : 0;
+  const maxFromSplits = (splits ?? []).reduce((currentMax, split) => {
+    if (typeof split.averageHeartrate !== 'number' || !Number.isFinite(split.averageHeartrate)) {
+      return currentMax;
+    }
+    return Math.max(currentMax, split.averageHeartrate);
+  }, 0);
+  const resolved = Math.max(maxFromDetail, maxFromSplits, 160);
+  return Math.round(resolved);
+}
+
+function resolveStravaMaxHeartRate(zones: RunHeartRateZone[], maxHeartRate: number | null): number | null {
+  if (typeof maxHeartRate === 'number' && Number.isFinite(maxHeartRate) && maxHeartRate > 0) {
+    return Math.round(maxHeartRate);
+  }
+
+  const maxFromZones = zones.reduce((currentMax, zone) => {
+    const candidate = zone.maxBpm ?? zone.minBpm;
+    if (!Number.isFinite(candidate)) {
+      return currentMax;
+    }
+    return Math.max(currentMax, candidate);
+  }, 0);
+
+  return maxFromZones > 0 ? Math.round(maxFromZones) : null;
+}
+
+function buildStravaHeartRateZoneSummary(
+  zones: RunHeartRateZone[] | undefined,
+  maxHeartRate: number | null,
+): HeartRateZoneSummary | null {
+  if (!zones || zones.length === 0) {
+    return null;
+  }
+
+  const normalized = [...zones]
+    .map((zone) => ({
+      zone: zone.zone,
+      minBpm: Math.max(0, Number(zone.minBpm)),
+      maxBpm: zone.maxBpm == null || !Number.isFinite(Number(zone.maxBpm)) ? null : Number(zone.maxBpm),
+      durationSec: Math.max(0, Number(zone.timeS)),
+      ratio: zone.percentage == null ? NaN : Number(zone.percentage),
+      color: HEART_RATE_ZONE_COLORS[Number(zone.zone.replace(/\D/g, '')) - 1] ?? HEART_RATE_ZONE_COLORS[0],
+    }))
+    .filter((zone) => Number.isFinite(zone.minBpm) && Number.isFinite(zone.durationSec))
+    .sort((a, b) => a.minBpm - b.minBpm);
+
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const totalDurationSec = normalized.reduce((sum, zone) => sum + zone.durationSec, 0);
+  const normalizedZones = normalized.map((zone) => {
+    const ratioFromPayloadRaw = Number.isFinite(zone.ratio) ? Math.max(0, zone.ratio) : NaN;
+    const ratioFromPayload =
+      Number.isFinite(ratioFromPayloadRaw) && ratioFromPayloadRaw > 1 && ratioFromPayloadRaw <= 100
+        ? ratioFromPayloadRaw / 100
+        : ratioFromPayloadRaw;
+    const ratio = Number.isFinite(ratioFromPayload) ? ratioFromPayload : totalDurationSec > 0 ? zone.durationSec / totalDurationSec : 0;
+    return {
+      ...zone,
+      ratio,
+    };
+  });
+
+  return {
+    source: 'strava',
+    maxHeartRate: resolveStravaMaxHeartRate(zones, maxHeartRate),
+    totalDurationSec,
+    zones: normalizedZones,
+  };
+}
+
+function buildEstimatedHeartRateZoneSummary(splits: RunSplit[] | undefined, maxHeartRate: number | null): HeartRateZoneSummary | null {
+  const validSplits = (splits ?? []).filter(
+    (split) =>
+      typeof split.averageHeartrate === 'number' &&
+      Number.isFinite(split.averageHeartrate) &&
+      typeof split.elapsedTimeS === 'number' &&
+      split.elapsedTimeS > 0,
+  );
+
+  if (validSplits.length === 0) {
+    return null;
+  }
+
+  const resolvedMaxHeartRate = resolveMaxHeartRate(validSplits, maxHeartRate);
+  const boundaries = HEART_RATE_ZONE_EDGES.map((edge) => Math.round(resolvedMaxHeartRate * edge));
+  const zones: HeartRateZonePoint[] = [
+    { zone: 'Z1', minBpm: 0, maxBpm: boundaries[0], durationSec: 0, ratio: 0, color: HEART_RATE_ZONE_COLORS[0] },
+    { zone: 'Z2', minBpm: boundaries[0] + 1, maxBpm: boundaries[1], durationSec: 0, ratio: 0, color: HEART_RATE_ZONE_COLORS[1] },
+    { zone: 'Z3', minBpm: boundaries[1] + 1, maxBpm: boundaries[2], durationSec: 0, ratio: 0, color: HEART_RATE_ZONE_COLORS[2] },
+    { zone: 'Z4', minBpm: boundaries[2] + 1, maxBpm: boundaries[3], durationSec: 0, ratio: 0, color: HEART_RATE_ZONE_COLORS[3] },
+    { zone: 'Z5', minBpm: boundaries[3] + 1, maxBpm: null, durationSec: 0, ratio: 0, color: HEART_RATE_ZONE_COLORS[4] },
+  ];
+
+  for (const split of validSplits) {
+    const heartrate = split.averageHeartrate ?? 0;
+    const duration = split.elapsedTimeS;
+    const zoneIndex = zones.findIndex((zone) => {
+      if (zone.maxBpm == null) {
+        return heartrate >= zone.minBpm;
+      }
+      return heartrate >= zone.minBpm && heartrate <= zone.maxBpm;
+    });
+    const resolvedIndex = zoneIndex === -1 ? zones.length - 1 : zoneIndex;
+    zones[resolvedIndex].durationSec += duration;
+  }
+
+  const totalDurationSec = zones.reduce((sum, zone) => sum + zone.durationSec, 0);
+  if (totalDurationSec <= 0) {
+    return null;
+  }
+
+  return {
+    source: 'estimated',
+    maxHeartRate: resolvedMaxHeartRate,
+    totalDurationSec,
+    zones: zones.map((zone) => ({
+      ...zone,
+      ratio: zone.durationSec / totalDurationSec,
+    })),
+  };
+}
+
+function formatHeartRateZoneRange(minBpm: number, maxBpm: number | null): string {
+  if (maxBpm == null) {
+    return `>${minBpm} bpm`;
+  }
+  return `${minBpm}-${maxBpm} bpm`;
 }
 
 function buildMonthDateRange(year: number, month: number): DateFilter {
@@ -40,6 +202,53 @@ function formatDistanceTooltipValue(value: unknown): string {
 function formatPaceTooltipValue(value: unknown): string {
   const numeric = typeof value === 'number' ? value : Number(value ?? NaN);
   return Number.isFinite(numeric) ? formatPace(numeric) : '--';
+}
+
+function formatElapsedAxisLabel(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds)) {
+    return '--';
+  }
+  const clamped = Math.max(0, Math.round(totalSeconds));
+  const minutes = Math.floor(clamped / 60);
+  const seconds = clamped % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function mapSplitTrendPoints(splits: RunSplit[] | undefined): DetailTrendPoint[] {
+  if (!splits || splits.length === 0) {
+    return [];
+  }
+
+  const points: DetailTrendPoint[] = [];
+  let cumulativeSeconds = 0;
+  let cumulativeDistance = 0;
+  for (const split of splits) {
+    cumulativeSeconds += split.elapsedTimeS;
+    cumulativeDistance += split.distanceM;
+    points.push({
+      elapsedTimeS: cumulativeSeconds,
+      distanceM: cumulativeDistance,
+      paceSecPerKm: split.paceSecPerKm,
+      heartrate: split.averageHeartrate,
+    });
+  }
+  return points;
+}
+
+function normalizeTrendPoints(trendPoints: RunTrendPoint[] | undefined): DetailTrendPoint[] {
+  if (!trendPoints || trendPoints.length === 0) {
+    return [];
+  }
+
+  return trendPoints
+    .filter((point) => Number.isFinite(point.elapsedTimeS) && point.elapsedTimeS >= 0)
+    .map((point) => ({
+      elapsedTimeS: point.elapsedTimeS,
+      distanceM: point.distanceM,
+      paceSecPerKm: point.paceSecPerKm,
+      heartrate: point.heartrate,
+    }))
+    .sort((a, b) => a.elapsedTimeS - b.elapsedTimeS);
 }
 
 function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy, sortDir: 'asc' | 'desc', refreshKey: number) {
@@ -129,6 +338,30 @@ function RunMap({ encodedPolyline }: { encodedPolyline: string }) {
   );
 }
 
+function DetailTrendTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: DetailTrendPoint }>;
+}) {
+  if (!active || !payload || payload.length === 0 || !payload[0].payload) {
+    return null;
+  }
+
+  const point = payload[0].payload;
+  return (
+    <div className="trend-tooltip">
+      <div className="trend-tooltip-title">
+        用时 {formatElapsedAxisLabel(point.elapsedTimeS)}
+        {point.distanceM != null ? ` · ${formatDistance(point.distanceM)}` : ''}
+      </div>
+      <div>配速：{formatPace(point.paceSecPerKm)}</div>
+      <div>心率：{formatHeartRate(point.heartrate)}</div>
+    </div>
+  );
+}
+
 export function App() {
   const [filters, setFilters] = useState<DateFilter>({});
   const [page, setPage] = useState(1);
@@ -157,6 +390,20 @@ export function App() {
 
   const totalPages = Math.max(1, Math.ceil(activities.total / activities.pageSize));
   const availableMonths = quickYear ? calendarOptions.monthsByYear[String(quickYear)] ?? [] : [];
+  const detailTrendData = useMemo<DetailTrendPoint[]>(() => {
+    const streamPoints = normalizeTrendPoints(selectedActivity?.trendPoints);
+    if (streamPoints.length > 0) {
+      return streamPoints;
+    }
+    return mapSplitTrendPoints(selectedActivity?.splits);
+  }, [selectedActivity?.trendPoints, selectedActivity?.splits]);
+  const heartRateZoneSummary = useMemo(() => {
+    const stravaSummary = buildStravaHeartRateZoneSummary(selectedActivity?.heartRateZones, selectedActivity?.maxHeartrate ?? null);
+    if (stravaSummary) {
+      return stravaSummary;
+    }
+    return buildEstimatedHeartRateZoneSummary(selectedActivity?.splits, selectedActivity?.athleteMaxHeartrate ?? null);
+  }, [selectedActivity?.heartRateZones, selectedActivity?.splits, selectedActivity?.athleteMaxHeartrate]);
 
   async function loadCalendarOptions(): Promise<void> {
     try {
@@ -502,7 +749,10 @@ export function App() {
                     </button>
                   </th>
                   <th>爬升</th>
-                  <th>心率</th>
+                  <th>平均心率</th>
+                  <th>最高心率</th>
+                  <th>卡路里</th>
+                  <th>平均步频</th>
                   <th>AI分析</th>
                 </tr>
               </thead>
@@ -517,6 +767,9 @@ export function App() {
                     <td>{formatPace(item.paceSecPerKm)}</td>
                     <td>{formatElevation(item.totalElevationGainM)}</td>
                     <td>{formatHeartRate(item.averageHeartrate)}</td>
+                    <td>{formatHeartRate(item.maxHeartrate)}</td>
+                    <td>{formatCalories(item.calories ?? null)}</td>
+                    <td>{formatCadence(item.averageCadence)}</td>
                     <td>
                       <button
                         className="analysis-btn"
@@ -574,6 +827,79 @@ export function App() {
 
             {selectedActivity.mapPolyline ? <RunMap encodedPolyline={selectedActivity.mapPolyline} /> : <div className="empty-box">暂无地图路线</div>}
 
+            <h4>趋势图</h4>
+            <p className="trend-source-note">{selectedActivity.trendPoints?.length ? '数据源：Strava Streams（细粒度）' : '数据源：分公里 splits（降级）'}</p>
+            {detailTrendData.length > 0 ? (
+              <div className="detail-trends-grid">
+                <section className="trend-chart-card">
+                  <h5>心率趋势</h5>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={detailTrendData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="elapsedTimeS" tickFormatter={formatElapsedAxisLabel} minTickGap={24} />
+                      <YAxis />
+                      <Tooltip content={<DetailTrendTooltip />} />
+                      <Line type="monotone" dataKey="heartrate" stroke="#de4d3e" name="心率" strokeWidth={2.5} connectNulls dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </section>
+                <section className="trend-chart-card">
+                  <h5>配速趋势</h5>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={detailTrendData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="elapsedTimeS" tickFormatter={formatElapsedAxisLabel} minTickGap={24} />
+                      <YAxis />
+                      <Tooltip content={<DetailTrendTooltip />} />
+                      <Line type="monotone" dataKey="paceSecPerKm" stroke="#0e8892" name="配速" strokeWidth={2.5} connectNulls dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </section>
+              </div>
+            ) : (
+              <div className="empty-box">暂无趋势图数据</div>
+            )}
+
+            <section className="heart-rate-zones-card">
+              <h4>心率区间</h4>
+              {heartRateZoneSummary ? (
+                <>
+                  <p className="heart-rate-zones-subtitle">
+                    {heartRateZoneSummary.source === 'strava'
+                      ? `来自 Strava 活动区间统计${
+                          heartRateZoneSummary.maxHeartRate ? `（最大心率 ${heartRateZoneSummary.maxHeartRate} bpm）` : ''
+                        }。`
+                      : `区间数据缺失，已按分段心率估算（最大心率 ${heartRateZoneSummary.maxHeartRate ?? '--'} bpm）。`}
+                  </p>
+                  <div className="heart-rate-zones-list">
+                    {[...heartRateZoneSummary.zones].reverse().map((zone) => {
+                      const percent = Math.round(zone.ratio * 100);
+                      const widthPercent = zone.ratio <= 0 ? 0 : Math.max(6, zone.ratio * 100);
+                      return (
+                        <div className="heart-rate-zone-row" key={zone.zone}>
+                          <div className="heart-rate-zone-label">{zone.zone}</div>
+                          <div className="heart-rate-zone-bar-wrap">
+                            <div className="heart-rate-zone-track">
+                              <div
+                                className="heart-rate-zone-fill"
+                                style={{ width: `${widthPercent}%`, backgroundColor: zone.color }}
+                                title={`${zone.zone} ${percent}%`}
+                              />
+                            </div>
+                            <div className="heart-rate-zone-percent">{percent}%</div>
+                          </div>
+                          <div className="heart-rate-zone-range">{formatHeartRateZoneRange(zone.minBpm, zone.maxBpm)}</div>
+                          <div className="heart-rate-zone-duration">{formatDuration(zone.durationSec)}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : (
+                <div className="empty-box">暂无心率区间数据</div>
+              )}
+            </section>
+
             <section className="analysis-panel">
               <div className="analysis-panel-header">
                 <h4>AI训练分析</h4>
@@ -602,6 +928,8 @@ export function App() {
                       <th>时间</th>
                       <th>配速</th>
                       <th>心率</th>
+                      <th>卡路里</th>
+                      <th>步频</th>
                       <th>海拔变化</th>
                     </tr>
                   </thead>
@@ -613,6 +941,8 @@ export function App() {
                         <td>{formatDuration(split.elapsedTimeS)}</td>
                         <td>{formatPace(split.paceSecPerKm)}</td>
                         <td>{formatHeartRate(split.averageHeartrate)}</td>
+                        <td>{formatCalories(split.calories)}</td>
+                        <td>{formatCadence(split.averageCadence)}</td>
                         <td>{split.elevationDifferenceM == null ? '--' : `${split.elevationDifferenceM.toFixed(1)} m`}</td>
                       </tr>
                     ))}

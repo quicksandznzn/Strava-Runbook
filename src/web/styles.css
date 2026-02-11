@@ -404,6 +404,111 @@ td {
   font-size: 13px;
 }
 
+.detail-trends-grid {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.trend-source-note {
+  margin: 4px 0 10px;
+  color: var(--ink-1);
+  font-size: 12px;
+}
+
+.trend-chart-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.trend-chart-card h5 {
+  margin: 2px 0 8px;
+  font-size: 14px;
+}
+
+.trend-tooltip {
+  background: rgba(13, 34, 48, 0.9);
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.trend-tooltip-title {
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.heart-rate-zones-card {
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.heart-rate-zones-card h4 {
+  margin: 0;
+}
+
+.heart-rate-zones-subtitle {
+  margin: 6px 0 12px;
+  color: var(--ink-1);
+  font-size: 13px;
+}
+
+.heart-rate-zones-list {
+  display: grid;
+  gap: 8px;
+}
+
+.heart-rate-zone-row {
+  display: grid;
+  grid-template-columns: 34px 1fr 108px 72px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.heart-rate-zone-label {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+}
+
+.heart-rate-zone-bar-wrap {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.heart-rate-zone-track {
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(13, 34, 48, 0.08);
+  overflow: hidden;
+}
+
+.heart-rate-zone-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.heart-rate-zone-percent {
+  min-width: 36px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+}
+
+.heart-rate-zone-range,
+.heart-rate-zone-duration {
+  color: var(--ink-1);
+  text-align: right;
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -441,5 +546,20 @@ td {
 
   .charts-grid {
     grid-template-columns: 1fr;
+  }
+
+  .detail-trends-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .heart-rate-zone-row {
+    grid-template-columns: 30px 1fr;
+    row-gap: 4px;
+  }
+
+  .heart-rate-zone-range,
+  .heart-rate-zone-duration {
+    text-align: left;
+    padding-left: 38px;
   }
 }

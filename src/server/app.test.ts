@@ -46,6 +46,11 @@ beforeAll(() => {
     sufferScore: 40,
     mapSummaryPolyline: null,
     mapPolyline: null,
+    trendPoints: [
+      { elapsedTimeS: 60, distanceM: 250, paceSecPerKm: 340, heartrate: 145 },
+      { elapsedTimeS: 120, distanceM: 520, paceSecPerKm: 335, heartrate: 149 },
+      { elapsedTimeS: 180, distanceM: 790, paceSecPerKm: 332, heartrate: 152 },
+    ],
     rawJson: '{}',
     splits: [
       {
@@ -56,6 +61,8 @@ beforeAll(() => {
         averageSpeedMps: 2.7,
         paceSecPerKm: 360,
         averageHeartrate: 152,
+        averageCadence: 84,
+        calories: 62,
       },
     ],
   });
@@ -131,6 +138,15 @@ describe('api', () => {
     expect(res.body.stravaId).toBe(102);
     expect(res.body.averageHeartrate).toBeNull();
     expect(res.body.mapPolyline).toBeNull();
+    expect(res.body.athleteMaxHeartrate).toBe(186);
+  });
+
+  it('returns detail payload with trend points when available', async () => {
+    const res = await request(app).get('/api/activities/101');
+    expect(res.status).toBe(200);
+    expect(res.body.stravaId).toBe(101);
+    expect(res.body.trendPoints).toHaveLength(3);
+    expect(res.body.trendPoints[0].elapsedTimeS).toBe(60);
   });
 
   it('generates and caches AI analysis', async () => {

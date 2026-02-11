@@ -71,12 +71,37 @@ describe('App', () => {
           paceSecPerKm: 360,
           averageHeartrate: 150,
           maxHeartrate: 170,
+          athleteMaxHeartrate: 186,
           averageCadence: 80,
           sufferScore: 50,
           mapSummaryPolyline: null,
           mapPolyline: null,
           updatedAt: '2026-01-01T09:00:00Z',
-          splits: [],
+          trendPoints: [
+            { elapsedTimeS: 60, distanceM: 250, paceSecPerKm: 342, heartrate: 144 },
+            { elapsedTimeS: 120, distanceM: 520, paceSecPerKm: 336, heartrate: 148 },
+            { elapsedTimeS: 180, distanceM: 800, paceSecPerKm: 333, heartrate: 151 },
+          ],
+          heartRateZones: [
+            { zone: 'Z1', minBpm: 0, maxBpm: 121, timeS: 10, percentage: 0.01 },
+            { zone: 'Z2', minBpm: 122, maxBpm: 151, timeS: 140, percentage: 0.14 },
+            { zone: 'Z3', minBpm: 152, maxBpm: 166, timeS: 80, percentage: 0.08 },
+            { zone: 'Z4', minBpm: 167, maxBpm: 180, timeS: 760, percentage: 0.76 },
+            { zone: 'Z5', minBpm: 181, maxBpm: null, timeS: 10, percentage: 0.01 },
+          ],
+          splits: [
+            {
+              splitIndex: 1,
+              distanceM: 1000,
+              elapsedTimeS: 360,
+              elevationDifferenceM: 1,
+              averageSpeedMps: 2.78,
+              paceSecPerKm: 360,
+              averageHeartrate: 150,
+              averageCadence: 84,
+              calories: 62,
+            },
+          ],
         });
       }
 
@@ -98,6 +123,7 @@ describe('App', () => {
             paceSecPerKm: 360,
             averageHeartrate: 150,
             maxHeartrate: 170,
+            athleteMaxHeartrate: 186,
             averageCadence: 80,
             sufferScore: 50,
             mapSummaryPolyline: null,
@@ -118,6 +144,11 @@ describe('App', () => {
 
     fireEvent.click(screen.getByText('Morning Run'));
     await screen.findByText('单次跑步详情');
+    expect(await screen.findByText('心率趋势')).toBeInTheDocument();
+    expect(await screen.findByText('配速趋势')).toBeInTheDocument();
+    expect(await screen.findByText('心率区间')).toBeInTheDocument();
+    expect(await screen.findByText('来自 Strava 活动区间统计（最大心率 170 bpm）。')).toBeInTheDocument();
+    expect(await screen.findByText('数据源：Strava Streams（细粒度）')).toBeInTheDocument();
 
     expect(fetchMock).toHaveBeenCalled();
   });
@@ -252,6 +283,7 @@ describe('App', () => {
           paceSecPerKm: 360,
           averageHeartrate: 150,
           maxHeartrate: 170,
+          athleteMaxHeartrate: 186,
           averageCadence: 80,
           sufferScore: 50,
           mapSummaryPolyline: null,
@@ -279,6 +311,7 @@ describe('App', () => {
             paceSecPerKm: 360,
             averageHeartrate: 150,
             maxHeartrate: 170,
+            athleteMaxHeartrate: 186,
             averageCadence: 80,
             sufferScore: 50,
             mapSummaryPolyline: null,
@@ -350,6 +383,7 @@ describe('App', () => {
           paceSecPerKm: 360,
           averageHeartrate: 150,
           maxHeartrate: 170,
+          athleteMaxHeartrate: 186,
           averageCadence: 80,
           sufferScore: 50,
           mapSummaryPolyline: null,
@@ -378,6 +412,7 @@ describe('App', () => {
               paceSecPerKm: 360,
               averageHeartrate: 150,
               maxHeartrate: 170,
+              athleteMaxHeartrate: 186,
               averageCadence: 80,
               sufferScore: 50,
               mapSummaryPolyline: null,
@@ -457,5 +492,125 @@ describe('App', () => {
 
     const periodCall = fetchMock.mock.calls.find((entry) => String(entry[0]).startsWith('/api/analysis/period'));
     expect(periodCall).toBeTruthy();
+  });
+
+  it('estimates heart rate zones with Strava-like thresholds when zone payload is missing', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/summary')) {
+        return createResponse({
+          totalRuns: 1,
+          totalDistanceM: 8000,
+          totalMovingTimeS: 3000,
+          totalElevationGainM: 80,
+          averagePaceSecPerKm: 375,
+          bestPaceSecPerKm: 350,
+          averageHeartrate: 140,
+        });
+      }
+      if (url.startsWith('/api/trends/weekly')) {
+        return createResponse([]);
+      }
+      if (url.startsWith('/api/filters/calendar')) {
+        return createResponse({
+          years: [2026],
+          monthsByYear: {
+            '2026': [2],
+          },
+        });
+      }
+      if (url.startsWith('/api/activities/2/analysis')) {
+        return createErrorResponse(404, { error: 'No analysis yet for this activity.' });
+      }
+      if (url.startsWith('/api/activities/2')) {
+        return createResponse({
+          stravaId: 2,
+          name: 'Easy Run',
+          startDateLocal: '2026-02-10T08:00:00Z',
+          distanceM: 8000,
+          movingTimeS: 3000,
+          elapsedTimeS: 3050,
+          totalElevationGainM: 50,
+          averageSpeedMps: 2.66,
+          maxSpeedMps: 4.1,
+          paceSecPerKm: 375,
+          averageHeartrate: 140,
+          maxHeartrate: 187,
+          athleteMaxHeartrate: 187,
+          averageCadence: 82,
+          sufferScore: 40,
+          mapSummaryPolyline: null,
+          mapPolyline: null,
+          updatedAt: '2026-02-10T09:00:00Z',
+          splits: [
+            {
+              splitIndex: 1,
+              distanceM: 1000,
+              elapsedTimeS: 360,
+              elevationDifferenceM: 1,
+              averageSpeedMps: 2.78,
+              paceSecPerKm: 360,
+              averageHeartrate: 148,
+              averageCadence: 84,
+              calories: 62,
+            },
+            {
+              splitIndex: 2,
+              distanceM: 1000,
+              elapsedTimeS: 390,
+              elevationDifferenceM: 1,
+              averageSpeedMps: 2.56,
+              paceSecPerKm: 390,
+              averageHeartrate: 150,
+              averageCadence: 82,
+              calories: 64,
+            },
+          ],
+        });
+      }
+      if (url.startsWith('/api/activities')) {
+        return createResponse({
+          page: 1,
+          pageSize: 20,
+          total: 1,
+          items: [
+            {
+              stravaId: 2,
+              name: 'Easy Run',
+              startDateLocal: '2026-02-10T08:00:00Z',
+              distanceM: 8000,
+              movingTimeS: 3000,
+              elapsedTimeS: 3050,
+              totalElevationGainM: 50,
+              averageSpeedMps: 2.66,
+              maxSpeedMps: 4.1,
+              paceSecPerKm: 375,
+              averageHeartrate: 140,
+              maxHeartrate: 187,
+              athleteMaxHeartrate: 187,
+              averageCadence: 82,
+              sufferScore: 40,
+              mapSummaryPolyline: null,
+              mapPolyline: null,
+              updatedAt: '2026-02-10T09:00:00Z',
+            },
+          ],
+        });
+      }
+
+      return createErrorResponse(404, { error: 'unexpected request' });
+    });
+
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    render(<App />);
+
+    fireEvent.click(await screen.findByText('Easy Run'));
+
+    expect(await screen.findByText('区间数据缺失，已按分段心率估算（最大心率 187 bpm）。')).toBeInTheDocument();
+    expect(await screen.findByText('0-122 bpm')).toBeInTheDocument();
+    expect(await screen.findByText('123-151 bpm')).toBeInTheDocument();
+    expect(await screen.findByText('152-166 bpm')).toBeInTheDocument();
+    expect(await screen.findByText('167-181 bpm')).toBeInTheDocument();
+    expect(await screen.findByText('>182 bpm')).toBeInTheDocument();
   });
 });

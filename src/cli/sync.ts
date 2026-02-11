@@ -51,8 +51,12 @@ export async function runSync(options: SyncOptions, repository?: RunRepository):
 
     for (const summary of summaryResult.runs) {
       try {
-        const detail = await client.getActivityById(summary.id);
-        const persisted = toPersistedActivity(detail);
+        const [detail, activityZones, streams] = await Promise.all([
+          client.getActivityById(summary.id),
+          client.getActivityZonesById(summary.id).catch(() => undefined),
+          client.getActivityStreamsById(summary.id).catch(() => undefined),
+        ]);
+        const persisted = toPersistedActivity(detail, activityZones, streams);
         const result = repo.upsertRunActivity(persisted);
         if (result === 'created') {
           created += 1;

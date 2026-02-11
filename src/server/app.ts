@@ -12,6 +12,8 @@ import type {
 import type { RunRepository } from '../db/repository.js';
 import { runSync, type SyncStats } from '../cli/sync.js';
 
+const DEFAULT_ATHLETE_MAX_HEARTRATE = 186;
+
 function isValidDateInput(value: string | undefined): boolean {
   if (!value) {
     return true;
@@ -35,6 +37,18 @@ function normalizePeriod(input: string | undefined): PeriodAnalysisPeriod | null
     return input;
   }
   return null;
+}
+
+function resolveConfiguredAthleteMaxHeartrate(): number | null {
+  const raw = process.env.ATHLETE_MAX_HEARTRATE;
+  if (!raw) {
+    return DEFAULT_ATHLETE_MAX_HEARTRATE;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return DEFAULT_ATHLETE_MAX_HEARTRATE;
+  }
+  return Math.round(value);
 }
 
 function toDateString(value: Date): string {
@@ -80,6 +94,7 @@ interface AppOptions {
 
 export function createApp(repository: RunRepository, options: AppOptions = {}) {
   const app = express();
+  const configuredAthleteMaxHeartrate = resolveConfiguredAthleteMaxHeartrate();
   let syncInProgress = false;
   app.use(cors());
   app.use(express.json());
@@ -164,7 +179,10 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      res.json(activity);
+      res.json({
+        ...activity,
+        athleteMaxHeartrate: configuredAthleteMaxHeartrate ?? activity.athleteMaxHeartrate ?? null,
+      });
     } catch (error) {
       next(error);
     }

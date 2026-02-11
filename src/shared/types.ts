@@ -21,12 +21,30 @@ export interface RunSplit {
   averageSpeedMps: number | null;
   paceSecPerKm: number | null;
   averageHeartrate: number | null;
+  averageCadence: number | null;
+  calories: number | null;
+}
+
+export interface RunHeartRateZone {
+  zone: string;
+  minBpm: number;
+  maxBpm: number | null;
+  timeS: number;
+  percentage: number | null;
+}
+
+export interface RunTrendPoint {
+  elapsedTimeS: number;
+  distanceM: number | null;
+  paceSecPerKm: number | null;
+  heartrate: number | null;
 }
 
 export interface RunActivity {
   stravaId: number;
   name: string;
   deviceName?: string | null;
+  athleteMaxHeartrate?: number | null;
   startDateLocal: string;
   distanceM: number;
   movingTimeS: number;
@@ -38,10 +56,13 @@ export interface RunActivity {
   averageHeartrate: number | null;
   maxHeartrate: number | null;
   averageCadence: number | null;
+  calories?: number | null;
   sufferScore: number | null;
   mapSummaryPolyline: string | null;
   mapPolyline: string | null;
   splits?: RunSplit[];
+  heartRateZones?: RunHeartRateZone[];
+  trendPoints?: RunTrendPoint[];
   updatedAt: string;
 }
 
