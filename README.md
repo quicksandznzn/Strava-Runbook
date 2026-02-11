@@ -115,18 +115,6 @@ npm run test               # 测试
 npm run test:coverage      # 覆盖率
 ```
 
-## API
-
-- `GET /api/health`
-- `GET /api/summary?from=YYYY-MM-DD&to=YYYY-MM-DD`
-- `GET /api/trends/weekly?from=YYYY-MM-DD&to=YYYY-MM-DD`
-- `GET /api/filters/calendar`
-- `GET /api/activities?page=1&pageSize=20&sortBy=start_date_local|distance_m|pace_sec_per_km&sortDir=asc|desc`
-- `GET /api/activities/:id`
-- `GET /api/activities/:id/analysis`
-- `POST /api/activities/:id/analysis`，body: `{ "force": true|false }`
-- `POST /api/sync`：手动同步最新 Strava 跑步数据（按 `strava_id` 幂等 upsert，不会重复导入）
-
 ## Timezone
 
 - 页面显示、日期筛选、周趋势分组统一按 **上海时区（UTC+8 / Asia/Shanghai）**。
