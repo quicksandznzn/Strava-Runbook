@@ -20,7 +20,7 @@ Repository-level working rules for AI agents in this project.
 
 - Frontend: React + Vite + TypeScript + Recharts + Leaflet
 - Backend: Node.js + Express + TypeScript
-- Database: SQLite (`better-sqlite3`)
+- Database: PostgreSQL (`pg`)
 - CLI: Commander + TypeScript (`tsx`)
 - Tests: Vitest + Testing Library + Supertest
 
@@ -40,12 +40,14 @@ Repository-level working rules for AI agents in this project.
 - `src/cli`: Strava sync CLI
 - `src/db`: schema/repository/db init
 - `src/shared`: shared types and helpers
-- `data/`: local DB files (never commit)
+- `docker/data/postgresql/`: PostgreSQL data directory (never commit runtime files)
 - `docs/`: README images and docs assets
 
 ## 6. Required Commands
 
 - Install: `npm install`
+- Start PostgreSQL: `docker compose -f docker/docker-compose.yml up -d`
+- Stop PostgreSQL: `docker compose -f docker/docker-compose.yml down`
 - Dev (web + api): `npm run dev`
 - Web only: `npm run dev:web`
 - API only: `npm run dev:api`
@@ -60,7 +62,7 @@ Repository-level working rules for AI agents in this project.
 - Make small, scoped changes; avoid unrelated refactors.
 - If API changes:
   - update `src/shared/types.ts`
-  - update API section in `README.md`
+  - update usage docs in `README.md`
   - add/update server tests
 - If DB schema changes:
   - keep init/migration path safe for existing local DB
@@ -85,7 +87,7 @@ Repository-level working rules for AI agents in this project.
 ## 9. Security and Data Hygiene
 
 - Never commit `.env` or any secrets.
-- Never commit `data/*.db`.
+- Never commit `docker/data/postgresql/*` runtime files.
 - Do not log tokens in CLI or API error output.
 - Keep `.gitignore` aligned with local runtime artifacts.
 

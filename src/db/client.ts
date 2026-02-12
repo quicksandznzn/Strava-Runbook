@@ -1,18 +1,51 @@
-import Database from 'better-sqlite3';
-import { dirname } from 'node:path';
-import { mkdirSync } from 'node:fs';
-import { applySchema } from './schema.js';
+import { Pool, type PoolConfig } from 'pg';
 
-export const DEFAULT_DB_PATH = process.env.STRAVA_DB_PATH ?? 'data/strava.db';
+const DEFAULT_POSTGRES_HOST = '127.0.0.1';
+const DEFAULT_POSTGRES_PORT = 5432;
+const DEFAULT_POSTGRES_DB = 'run_strava';
+const DEFAULT_POSTGRES_USER = 'run_strava';
+const DEFAULT_POSTGRES_PASSWORD = 'run_strava';
 
-export function openDatabase(dbPath = DEFAULT_DB_PATH): Database.Database {
-  if (dbPath !== ':memory:') {
-    mkdirSync(dirname(dbPath), { recursive: true });
+function toBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+    return false;
+  }
+  return fallback;
+}
+
+function createSslConfigFromEnv(): PoolConfig['ssl'] {
+  const enabled = toBoolean(process.env.POSTGRES_SSL, false);
+  if (!enabled) {
+    return false;
+  }
+  return {
+    rejectUnauthorized: false,
+  };
+}
+
+export function createPgPoolFromEnv(): Pool {
+  const ssl = createSslConfigFromEnv();
+
+  if (process.env.DATABASE_URL) {
+    return new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl,
+    });
   }
 
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  applySchema(db);
-  return db;
+  return new Pool({
+    host: process.env.POSTGRES_HOST ?? DEFAULT_POSTGRES_HOST,
+    port: Number(process.env.POSTGRES_PORT ?? DEFAULT_POSTGRES_PORT),
+    database: process.env.POSTGRES_DB ?? DEFAULT_POSTGRES_DB,
+    user: process.env.POSTGRES_USER ?? DEFAULT_POSTGRES_USER,
+    password: process.env.POSTGRES_PASSWORD ?? DEFAULT_POSTGRES_PASSWORD,
+    ssl,
+  });
 }

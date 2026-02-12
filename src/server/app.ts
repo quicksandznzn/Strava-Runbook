@@ -1,4 +1,4 @@
-import express, { type Request, type Response, type NextFunction } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import type {
   ActivityAiAnalysis,
@@ -103,7 +103,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     res.json({ ok: true, now: new Date().toISOString() });
   });
 
-  app.get('/api/summary', (req, res, next) => {
+  app.get('/api/summary', async (req, res, next) => {
     try {
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -112,14 +112,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const result = repository.getSummary({ from, to });
+      const result = await repository.getSummary({ from, to });
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/trends/weekly', (req, res, next) => {
+  app.get('/api/trends/weekly', async (req, res, next) => {
     try {
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -128,23 +128,23 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const result = repository.getWeeklyTrends({ from, to });
+      const result = await repository.getWeeklyTrends({ from, to });
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/filters/calendar', (_req, res, next) => {
+  app.get('/api/filters/calendar', async (_req, res, next) => {
     try {
-      const result = repository.getCalendarFilterOptions();
+      const result = await repository.getCalendarFilterOptions();
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/activities', (req, res, next) => {
+  app.get('/api/activities', async (req, res, next) => {
     try {
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -158,14 +158,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
       const sortBy = normalizeSortBy(req.query.sortBy as string | undefined);
       const sortDir = normalizeSortDir(req.query.sortDir as string | undefined);
 
-      const result = repository.listActivities({ from, to, page, pageSize, sortBy, sortDir });
+      const result = await repository.listActivities({ from, to, page, pageSize, sortBy, sortDir });
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/activities/:id', (req, res, next) => {
+  app.get('/api/activities/:id', async (req, res, next) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) {
@@ -173,7 +173,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const activity = repository.getActivityById(id);
+      const activity = await repository.getActivityById(id);
       if (!activity) {
         res.status(404).json({ error: 'Activity not found.' });
         return;
@@ -188,7 +188,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     }
   });
 
-  app.get('/api/activities/:id/analysis', (req, res, next) => {
+  app.get('/api/activities/:id/analysis', async (req, res, next) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) {
@@ -196,7 +196,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const cached = repository.getActivityAnalysis(id);
+      const cached = await repository.getActivityAnalysis(id);
       if (!cached) {
         res.status(404).json({ error: 'No analysis yet for this activity.' });
         return;
@@ -217,7 +217,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
       }
 
       const force = Boolean(req.body?.force);
-      const cached = repository.getActivityAnalysis(id);
+      const cached = await repository.getActivityAnalysis(id);
       if (cached && !force) {
         res.json({ ...cached, cached: true });
         return;
@@ -228,14 +228,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const activity = repository.getActivityById(id);
+      const activity = await repository.getActivityById(id);
       if (!activity) {
         res.status(404).json({ error: 'Activity not found.' });
         return;
       }
 
       const content = await options.analyzeActivity(activity);
-      const payload: ActivityAiAnalysis = repository.saveActivityAnalysis(id, content);
+      const payload: ActivityAiAnalysis = await repository.saveActivityAnalysis(id, content);
       res.json(payload);
     } catch (error) {
       next(error);
@@ -256,7 +256,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
       }
 
       const range = getPeriodRangeInShanghai(period);
-      const summary = repository.getSummary(range);
+      const summary = await repository.getSummary(range);
       if (summary.totalRuns === 0) {
         const payload: PeriodAnalysisResult = {
           period,
@@ -269,14 +269,16 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const recentRuns = repository.listActivities({
-        from: range.from,
-        to: range.to,
-        page: 1,
-        pageSize: 20,
-        sortBy: 'start_date_local',
-        sortDir: 'desc',
-      }).items;
+      const recentRuns = (
+        await repository.listActivities({
+          from: range.from,
+          to: range.to,
+          page: 1,
+          pageSize: 20,
+          sortBy: 'start_date_local',
+          sortDir: 'desc',
+        })
+      ).items;
 
       const content = await options.analyzePeriod({
         period,
@@ -316,12 +318,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
 
       let from = requestedFrom;
       if (!full && !from) {
-        const latest = repository.listActivities({
-          page: 1,
-          pageSize: 1,
-          sortBy: 'start_date_local',
-          sortDir: 'desc',
-        }).items[0];
+        const latest = (
+          await repository.listActivities({
+            page: 1,
+            pageSize: 1,
+            sortBy: 'start_date_local',
+            sortDir: 'desc',
+          })
+        ).items[0];
         from = latest?.startDateLocal.slice(0, 10) ?? '1970-01-01';
       }
 

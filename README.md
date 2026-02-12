@@ -1,6 +1,6 @@
 # Run Strava
 
-本地 Strava 跑步数据仪表盘。支持手动同步数据到 SQLite，并提供可视化分析与 AI 跑步解读。
+本地 Strava 跑步数据仪表盘。支持手动同步数据到 PostgreSQL，并提供可视化分析与 AI 跑步解读。
 
 ## Preview
 
@@ -13,16 +13,16 @@
 - 周趋势图：周里程、周均配速
 - 跑步记录表：分页、排序、日期筛选
 - 年/月快速筛选：例如 `2026年 -> 1月/2月/3月`
-- 单次详情：路线地图、分段配速
+- 单次详情：路线地图、分段成绩、心率区间、趋势图
 - AI 分析：调用本机 Codex CLI 生成训练建议
-- AI 分析持久化：每次生成写入 SQLite，重新生成覆盖上一次
+- AI 分析持久化：每次生成写入数据库，重新生成覆盖上一次
 - 周期 AI 分析：支持按周/按月/按年实时生成（不保存历史）
 
 ## Tech Stack
 
 - Frontend: React + Vite + TypeScript + Recharts + Leaflet
 - Backend: Node.js + Express + TypeScript
-- Database: SQLite (`better-sqlite3`)
+- Database: PostgreSQL (`pg`)
 - CLI: Commander + TypeScript
 - Test: Vitest + Testing Library + Supertest
 
@@ -31,11 +31,13 @@
 ```text
 src/
   cli/        # Strava 同步命令与 API 客户端
-  db/         # SQLite schema 与 repository
+  db/         # PostgreSQL schema 与 repository
   server/     # Express API
   shared/     # 前后端共享类型
   web/        # React 页面
-data/         # 本地数据库目录（默认 data/strava.db）
+docker/
+  docker-compose.yml
+  data/postgresql/   # PostgreSQL 本地持久化目录
 ```
 
 ## Quick Start
@@ -56,14 +58,33 @@ cp .env.example .env
 
 ```env
 STRAVA_ACCESS_TOKEN=your_strava_access_token
-STRAVA_DB_PATH=data/strava.db
 PORT=8787
 ATHLETE_MAX_HEARTRATE=186
+
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_DB=run_strava
+POSTGRES_USER=run_strava
+POSTGRES_PASSWORD=run_strava
+POSTGRES_SSL=false
+DATABASE_URL=
 ```
 
 `ATHLETE_MAX_HEARTRATE` 用于心率区间估算基准（默认 `186`）。
 
-### 3) 同步数据
+### 3) 启动 PostgreSQL（Docker）
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+停止：
+
+```bash
+docker compose -f docker/docker-compose.yml down
+```
+
+### 4) 同步 Strava 数据
 
 全量：
 
@@ -77,7 +98,7 @@ npm run strava:sync -- --full
 npm run strava:sync -- --from 2023-01-01
 ```
 
-### 4) 启动开发服务
+### 5) 启动开发服务
 
 ```bash
 npm run dev
@@ -131,7 +152,7 @@ npm run test:coverage
 ## Upload to GitHub Checklist
 
 - 确认 `.env` 未提交
-- 确认 `data/*.db` 未提交
+- 确认 `docker/data/postgresql` 下真实数据库文件未提交
 - 可选：补充截图到 `docs/`，并在 README 中引用
 
 ## License
