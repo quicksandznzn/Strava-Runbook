@@ -9,6 +9,12 @@ interface AnalyzeOptions {
   timeoutMs?: number;
 }
 
+interface CodexExecResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
 function formatDistance(meters: number): string {
   return `${(meters / 1000).toFixed(2)} km`;
 }
@@ -146,16 +152,20 @@ async function runCodexPrompt(prompt: string, options: AnalyzeOptions = {}): Pro
   const outputPath = join(tempDir, 'analysis.md');
 
   try {
-    const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+    const result = await new Promise<CodexExecResult>((resolve, reject) => {
       const child = spawn(
         'codex',
         ['exec', '--skip-git-repo-check', '-C', workdir, '--output-last-message', outputPath, prompt],
         {
-          stdio: ['ignore', 'ignore', 'pipe'],
+          stdio: ['ignore', 'pipe', 'pipe'],
         },
       );
 
+      let stdout = '';
       let stderr = '';
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
       child.stderr.on('data', (chunk) => {
         stderr += chunk.toString();
       });
@@ -170,7 +180,7 @@ async function runCodexPrompt(prompt: string, options: AnalyzeOptions = {}): Pro
 
       child.on('close', (code) => {
         clearTimeout(timer);
-        resolve({ code, stderr });
+        resolve({ code, stdout, stderr });
       });
     });
 
@@ -179,11 +189,71 @@ async function runCodexPrompt(prompt: string, options: AnalyzeOptions = {}): Pro
     }
 
     const text = (await readFile(outputPath, 'utf-8')).trim();
-    if (!text) {
-      throw new Error('Codex returned empty analysis content.');
+    if (text) {
+      return text;
     }
 
-    return text;
+    // Fallback: parse JSON event stream when output file is empty.
+    const fallback = await new Promise<CodexExecResult>((resolve, reject) => {
+      const child = spawn('codex', ['exec', '--skip-git-repo-check', '-C', workdir, '--json', prompt], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', (error) => {
+        reject(error);
+      });
+
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+      }, timeoutMs);
+
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        resolve({ code, stdout, stderr });
+      });
+    });
+
+    if (fallback.code !== 0) {
+      throw new Error(fallback.stderr.trim() || `codex exec failed with exit code ${fallback.code}`);
+    }
+
+    let agentMessage = '';
+    for (const line of fallback.stdout.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('{')) {
+        continue;
+      }
+      try {
+        const event = JSON.parse(trimmed) as {
+          type?: string;
+          item?: { type?: string; text?: string };
+        };
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
+          agentMessage = event.item.text;
+        }
+      } catch {
+        // Ignore non-JSON log lines from codex CLI.
+      }
+    }
+
+    if (agentMessage.trim()) {
+      return agentMessage.trim();
+    }
+
+    const stderrPreview = `${result.stderr}\n${fallback.stderr}`.trim().slice(-1200);
+    throw new Error(
+      stderrPreview
+        ? `Codex returned empty analysis content. stderr: ${stderrPreview}`
+        : 'Codex returned empty analysis content.',
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new Error('`codex` command not found. Please install Codex CLI first.');

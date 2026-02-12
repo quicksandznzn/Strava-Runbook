@@ -14,8 +14,8 @@ import type { RunRepository } from '../db/repository.js';
 import { runSync, type SyncStats } from '../cli/sync.js';
 
 const DEFAULT_ATHLETE_MAX_HEARTRATE = 186;
-const shanghaiDateFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Shanghai',
+const activityDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'UTC',
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -65,8 +65,8 @@ function toDateString(value: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function toShanghaiDate(value: string): string {
-  return shanghaiDateFormatter.format(new Date(value));
+function toActivityDate(value: string): string {
+  return activityDateFormatter.format(new Date(value));
 }
 
 function getPeriodRangeInShanghai(period: PeriodAnalysisPeriod, now: Date = new Date()): { from: string; to: string } {
@@ -279,7 +279,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const date = toShanghaiDate(activity.startDateLocal);
+      const date = toActivityDate(activity.startDateLocal);
       const [plan, cached] = await Promise.all([
         repository.getTrainingPlanByDate(date),
         repository.getActivityAnalysis(id),

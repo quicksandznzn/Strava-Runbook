@@ -277,6 +277,12 @@ function toIsoString(value: unknown): string {
   return new Date().toISOString();
 }
 
+const calendarDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'UTC',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 const shanghaiDateFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai',
   year: 'numeric',
@@ -284,8 +290,28 @@ const shanghaiDateFormatter = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 });
 
-function toShanghaiDateKey(dateIso: string): string {
-  return shanghaiDateFormatter.format(new Date(dateIso));
+function toCalendarDateKey(dateIso: string): string {
+  return calendarDateFormatter.format(new Date(dateIso));
+}
+
+function toSqlDateString(value: unknown): string {
+  if (typeof value === 'string') {
+    const matched = value.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (matched) {
+      return matched[1];
+    }
+  }
+
+  if (value instanceof Date) {
+    return shanghaiDateFormatter.format(value);
+  }
+
+  const parsed = new Date(String(value));
+  if (!Number.isNaN(parsed.getTime())) {
+    return shanghaiDateFormatter.format(parsed);
+  }
+
+  return String(value);
 }
 
 function buildMonthDateKeys(year: number, month: number): string[] {
@@ -348,7 +374,7 @@ function mapRunSplit(row: Record<string, unknown>): RunSplit {
 function mapTrainingPlan(row: Record<string, unknown>): TrainingPlan {
   return {
     id: Number(row.id),
-    date: String(row.date),
+    date: toSqlDateString(row.date),
     planText: String(row.plan_text),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
@@ -832,8 +858,8 @@ export function createRepository(db: Pool): RunRepository {
               (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km,
               (SELECT MAX(max_heartrate) FROM activities) AS athlete_max_heartrate
             FROM activities
-            WHERE DATE(start_date_local AT TIME ZONE 'Asia/Shanghai') >= $1::date
-              AND DATE(start_date_local AT TIME ZONE 'Asia/Shanghai') <= $2::date
+            WHERE DATE(start_date_local AT TIME ZONE 'UTC') >= $1::date
+              AND DATE(start_date_local AT TIME ZONE 'UTC') <= $2::date
             ORDER BY start_date_local ASC
           `,
           [from, to],
@@ -849,7 +875,7 @@ export function createRepository(db: Pool): RunRepository {
       const activityMap = new Map<string, RunActivity[]>();
       for (const row of activitiesResult.rows) {
         const activity = mapRunActivity(row as Record<string, unknown>);
-        const dateKey = toShanghaiDateKey(activity.startDateLocal);
+        const dateKey = toCalendarDateKey(activity.startDateLocal);
         if (!activityMap.has(dateKey)) {
           activityMap.set(dateKey, []);
         }
