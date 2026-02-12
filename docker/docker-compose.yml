@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: run-strava-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-run_strava}
+      POSTGRES_USER: ${POSTGRES_USER:-run_strava}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-run_strava}
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - ./data/postgresql:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-run_strava} -d ${POSTGRES_DB:-run_strava}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

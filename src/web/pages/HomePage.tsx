@@ -4,6 +4,7 @@ import type {
   ActivitySortBy,
   CalendarFilterOptions,
   PaginatedActivities,
+  PeriodAnalysisPeriod,
   RunActivity,
   RunHeartRateZone,
   RunSplit,
@@ -332,7 +333,7 @@ function formatPaceTooltipValue(value: unknown): string {
   return Number.isFinite(numeric) ? formatPace(numeric) : '--';
 }
 
-function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy, sortDir: 'asc' | 'desc') {
+function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy, sortDir: 'asc' | 'desc', refreshKey: number) {
   const [summary, setSummary] = useState<SummaryMetrics | null>(null);
   const [trends, setTrends] = useState<WeeklyTrendPoint[]>([]);
   const [activities, setActivities] = useState<PaginatedActivities>({ page: 1, pageSize: PAGE_SIZE, total: 0, items: [] });
@@ -376,7 +377,7 @@ function useQueryData(filters: DateFilter, page: number, sortBy: ActivitySortBy,
     return () => {
       cancelled = true;
     };
-  }, [filters.from, filters.to, page, sortBy, sortDir]);
+  }, [filters.from, filters.to, page, sortBy, sortDir, refreshKey]);
 
   return { summary, trends, activities, state, error };
 }
@@ -423,8 +424,16 @@ export function HomePage() {
   const [calendarOptions, setCalendarOptions] = useState<CalendarFilterOptions>({ years: [], monthsByYear: {} });
   const [quickYear, setQuickYear] = useState<number | ''>('');
   const [quickMonth, setQuickMonth] = useState<number | ''>('');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [syncState, setSyncState] = useState<LoadState>('idle');
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [periodAnalysisPeriod, setPeriodAnalysisPeriod] = useState<PeriodAnalysisPeriod>('week');
+  const [periodAnalysisState, setPeriodAnalysisState] = useState<LoadState>('idle');
+  const [periodAnalysisContent, setPeriodAnalysisContent] = useState<string | null>(null);
+  const [periodAnalysisRange, setPeriodAnalysisRange] = useState<{ from: string; to: string } | null>(null);
+  const [periodAnalysisError, setPeriodAnalysisError] = useState<string | null>(null);
 
-  const { summary, trends, activities, state, error } = useQueryData(filters, page, sortBy, sortDir);
+  const { summary, trends, activities, state, error } = useQueryData(filters, page, sortBy, sortDir, refreshKey);
 
   const totalPages = Math.max(1, Math.ceil(activities.total / activities.pageSize));
   const availableMonths = quickYear ? calendarOptions.monthsByYear[String(quickYear)] ?? [] : [];
@@ -492,7 +501,28 @@ export function HomePage() {
     };
   }, []);
 
-  async function openActivity(id: number): Promise<RunActivity | null> {
+  async function loadPersistedAnalysis(activityId: number): Promise<void> {
+    setAnalysisStateById((current) => ({ ...current, [activityId]: 'loading' }));
+    setAnalysisErrorById((current) => ({ ...current, [activityId]: null }));
+
+    try {
+      const response = await api.getActivityAnalysis(activityId);
+      if (response) {
+        setAnalysisById((current) => ({ ...current, [activityId]: response.content }));
+        setAnalysisStateById((current) => ({ ...current, [activityId]: 'ready' }));
+      } else {
+        setAnalysisStateById((current) => ({ ...current, [activityId]: 'idle' }));
+      }
+    } catch (analysisError) {
+      setAnalysisStateById((current) => ({ ...current, [activityId]: 'error' }));
+      setAnalysisErrorById((current) => ({
+        ...current,
+        [activityId]: analysisError instanceof Error ? analysisError.message : '分析数据加载失败',
+      }));
+    }
+  }
+
+  async function openActivity(id: number, loadAnalysis = true): Promise<RunActivity | null> {
     setDrawerState('loading');
     setDrawerError(null);
     setSelectedActivityPlan(null);
@@ -514,6 +544,9 @@ export function HomePage() {
         setSelectedActivityPlanError(planError instanceof Error ? planError.message : '加载训练计划失败');
       }
 
+      if (loadAnalysis) {
+        void loadPersistedAnalysis(id);
+      }
       setDrawerState('ready');
       return detail;
     } catch (detailError) {
@@ -548,11 +581,46 @@ export function HomePage() {
   }
 
   async function openAndGenerateAnalysis(activityId: number): Promise<void> {
-    const detail = await openActivity(activityId);
+    const detail = await openActivity(activityId, false);
     if (!detail) {
       return;
     }
     await generateAnalysis(activityId);
+  }
+
+  async function syncLatest(): Promise<void> {
+    setSyncState('loading');
+    setSyncMessage(null);
+    try {
+      const result = await api.syncLatest();
+      setSyncState('ready');
+      setSyncMessage(
+        `同步完成：新增 ${result.created} 条，更新 ${result.updated} 条，失败 ${result.failed} 条。` +
+          `（按 strava_id 幂等写入，不会重复导入）`,
+      );
+      setPage(1);
+      setRefreshKey((current) => current + 1);
+      const options = await api.getCalendarFilterOptions();
+      setCalendarOptions(options);
+    } catch (syncError) {
+      setSyncState('error');
+      setSyncMessage(syncError instanceof Error ? syncError.message : '同步失败');
+    }
+  }
+
+  async function generatePeriodAnalysis(period: PeriodAnalysisPeriod): Promise<void> {
+    setPeriodAnalysisPeriod(period);
+    setPeriodAnalysisState('loading');
+    setPeriodAnalysisError(null);
+    try {
+      const result = await api.generatePeriodAnalysis(period);
+      setPeriodAnalysisContent(result.content);
+      setPeriodAnalysisRange({ from: result.from, to: result.to });
+      setPeriodAnalysisState('ready');
+    } catch (analysisError) {
+      setPeriodAnalysisState('error');
+      setPeriodAnalysisError(analysisError instanceof Error ? analysisError.message : '周期分析生成失败');
+    }
   }
 
   function toggleSort(nextSortBy: ActivitySortBy): void {
@@ -623,6 +691,10 @@ export function HomePage() {
           >
             清空筛选
           </button>
+          <button className="ghost-btn" onClick={() => void syncLatest()} disabled={syncState === 'loading'}>
+            {syncState === 'loading' ? '同步中...' : '手动同步最新数据'}
+          </button>
+          {syncMessage ? <div className={`sync-status ${syncState === 'error' ? 'error' : 'ok'}`}>{syncMessage}</div> : null}
         </div>
       </header>
 
@@ -716,6 +788,35 @@ export function HomePage() {
             </ResponsiveContainer>
           )}
         </article>
+      </section>
+
+      <section className="card">
+        <div className="period-analysis-header">
+          <h2>周期AI分析（实时生成）</h2>
+          <div className="period-analysis-actions">
+            <button className="analysis-btn" onClick={() => void generatePeriodAnalysis('week')} disabled={periodAnalysisState === 'loading'}>
+              按周分析
+            </button>
+            <button className="analysis-btn" onClick={() => void generatePeriodAnalysis('month')} disabled={periodAnalysisState === 'loading'}>
+              按月分析
+            </button>
+            <button className="analysis-btn" onClick={() => void generatePeriodAnalysis('year')} disabled={periodAnalysisState === 'loading'}>
+              按年分析
+            </button>
+          </div>
+        </div>
+        {periodAnalysisState === 'loading' ? <div className="empty-box">AI 正在生成周期分析...</div> : null}
+        {periodAnalysisState === 'error' ? <div className="error-banner">{periodAnalysisError ?? '周期分析生成失败'}</div> : null}
+        {periodAnalysisRange ? (
+          <p className="period-analysis-meta">
+            周期：{periodAnalysisPeriod === 'week' ? '本周' : periodAnalysisPeriod === 'month' ? '本月' : '本年'}（
+            {periodAnalysisRange.from} ~ {periodAnalysisRange.to}）
+          </p>
+        ) : null}
+        {periodAnalysisContent ? <pre className="analysis-content">{periodAnalysisContent}</pre> : null}
+        {!periodAnalysisContent && periodAnalysisState !== 'loading' ? (
+          <div className="empty-box">点击“按周/按月/按年分析”实时生成，不会保存历史结果。</div>
+        ) : null}
       </section>
 
       <section className="card">

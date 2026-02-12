@@ -1,8 +1,9 @@
 import 'dotenv/config';
 import { Command } from 'commander';
 import { fileURLToPath } from 'node:url';
-import { openDatabase, DEFAULT_DB_PATH } from '../db/client.js';
+import { createPgPoolFromEnv } from '../db/client.js';
 import { createRepository, type RunRepository } from '../db/repository.js';
+import { applySchema } from '../db/schema.js';
 import { createStravaApiClient, fetchRunSummaries, toPersistedActivity } from './strava.js';
 
 export interface SyncStats {
@@ -16,7 +17,6 @@ export interface SyncStats {
 interface SyncOptions {
   full?: boolean;
   from?: string;
-  dbPath?: string;
 }
 
 function parseFromDateToEpoch(from?: string): number | undefined {
@@ -38,8 +38,12 @@ export async function runSync(options: SyncOptions, repository?: RunRepository):
     throw new Error('Missing STRAVA_ACCESS_TOKEN in environment.');
   }
 
-  const db = repository ? null : openDatabase(options.dbPath ?? DEFAULT_DB_PATH);
-  const repo = repository ?? createRepository(db!);
+  const pool = repository ? null : createPgPoolFromEnv();
+  if (pool) {
+    await applySchema(pool);
+  }
+
+  const repo = repository ?? createRepository(pool!);
   const client = createStravaApiClient(token);
   try {
     const afterEpoch = options.full ? undefined : parseFromDateToEpoch(options.from);
@@ -57,7 +61,7 @@ export async function runSync(options: SyncOptions, repository?: RunRepository):
           client.getActivityStreamsById(summary.id).catch(() => undefined),
         ]);
         const persisted = toPersistedActivity(detail, activityZones, streams);
-        const result = repo.upsertRunActivity(persisted);
+        const result = await repo.upsertRunActivity(persisted);
         if (result === 'created') {
           created += 1;
         } else {
@@ -77,19 +81,15 @@ export async function runSync(options: SyncOptions, repository?: RunRepository):
       failed,
     };
   } finally {
-    db?.close();
+    await pool?.end();
   }
 }
 
 async function main(): Promise<void> {
   const program = new Command();
-  program
-    .option('--full', 'perform full sync')
-    .option('--from <YYYY-MM-DD>', 'sync from date (inclusive)')
-    .option('--db-path <path>', 'sqlite db path', DEFAULT_DB_PATH)
-    .parse(process.argv);
+  program.option('--full', 'perform full sync').option('--from <YYYY-MM-DD>', 'sync from date (inclusive)').parse(process.argv);
 
-  const options = program.opts<{ full?: boolean; from?: string; dbPath?: string }>();
+  const options = program.opts<{ full?: boolean; from?: string }>();
 
   if (!options.full && !options.from) {
     options.from = '1970-01-01';

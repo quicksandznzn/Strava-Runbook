@@ -1,4 +1,4 @@
-import express, { type Request, type Response, type NextFunction } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import type {
   ActivityAiAnalysis,
@@ -14,6 +14,12 @@ import type { RunRepository } from '../db/repository.js';
 import { runSync, type SyncStats } from '../cli/sync.js';
 
 const DEFAULT_ATHLETE_MAX_HEARTRATE = 186;
+const shanghaiDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 function isValidDateInput(value: string | undefined): boolean {
   if (!value) {
@@ -57,6 +63,10 @@ function toDateString(value: Date): string {
   const m = String(value.getUTCMonth() + 1).padStart(2, '0');
   const d = String(value.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function toShanghaiDate(value: string): string {
+  return shanghaiDateFormatter.format(new Date(value));
 }
 
 function getPeriodRangeInShanghai(period: PeriodAnalysisPeriod, now: Date = new Date()): { from: string; to: string } {
@@ -148,7 +158,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     res.json({ ok: true, now: new Date().toISOString() });
   });
 
-  app.get('/api/summary', (req, res, next) => {
+  app.get('/api/summary', async (req, res, next) => {
     try {
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -157,14 +167,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const result = repository.getSummary({ from, to });
+      const result = await repository.getSummary({ from, to });
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/trends/weekly', (req, res, next) => {
+  app.get('/api/trends/weekly', async (req, res, next) => {
     try {
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -173,23 +183,23 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const result = repository.getWeeklyTrends({ from, to });
+      const result = await repository.getWeeklyTrends({ from, to });
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/filters/calendar', (_req, res, next) => {
+  app.get('/api/filters/calendar', async (_req, res, next) => {
     try {
-      const result = repository.getCalendarFilterOptions();
+      const result = await repository.getCalendarFilterOptions();
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/activities', (req, res, next) => {
+  app.get('/api/activities', async (req, res, next) => {
     try {
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -203,14 +213,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
       const sortBy = normalizeSortBy(req.query.sortBy as string | undefined);
       const sortDir = normalizeSortDir(req.query.sortDir as string | undefined);
 
-      const result = repository.listActivities({ from, to, page, pageSize, sortBy, sortDir });
+      const result = await repository.listActivities({ from, to, page, pageSize, sortBy, sortDir });
       res.json(result);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/activities/:id', (req, res, next) => {
+  app.get('/api/activities/:id', async (req, res, next) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) {
@@ -218,7 +228,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const activity = repository.getActivityById(id);
+      const activity = await repository.getActivityById(id);
       if (!activity) {
         res.status(404).json({ error: 'Activity not found.' });
         return;
@@ -233,7 +243,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     }
   });
 
-  app.get('/api/activities/:id/analysis', (req, res, next) => {
+  app.get('/api/activities/:id/analysis', async (req, res, next) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) {
@@ -241,7 +251,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const cached = repository.getActivityAnalysis(id);
+      const cached = await repository.getActivityAnalysis(id);
       if (!cached) {
         res.status(404).json({ error: 'No analysis yet for this activity.' });
         return;
@@ -263,29 +273,31 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
 
       const force = Boolean(req.body?.force);
 
-      if (!options.analyzeActivity) {
-        res.status(501).json({ error: 'AI analysis is not configured on the server.' });
-        return;
-      }
-
-      const activity = repository.getActivityById(id);
+      const activity = await repository.getActivityById(id);
       if (!activity) {
         res.status(404).json({ error: 'Activity not found.' });
         return;
       }
 
-      const date = activity.startDateLocal.split('T')[0];
-      const plan = repository.getTrainingPlanByDate(date);
-      const cached = repository.getActivityAnalysis(id);
+      const date = toShanghaiDate(activity.startDateLocal);
+      const [plan, cached] = await Promise.all([
+        repository.getTrainingPlanByDate(date),
+        repository.getActivityAnalysis(id),
+      ]);
 
       if (shouldUseCachedAnalysis(cached, force, plan)) {
         res.json({ ...cached, cached: true });
         return;
       }
 
+      if (!options.analyzeActivity) {
+        res.status(501).json({ error: 'AI analysis is not configured on the server.' });
+        return;
+      }
+
       const rawContent = await options.analyzeActivity(activity, plan ?? undefined);
       const content = ensurePlanCompletionSection(rawContent, plan);
-      const payload: ActivityAiAnalysis = repository.saveActivityAnalysis(id, content);
+      const payload: ActivityAiAnalysis = await repository.saveActivityAnalysis(id, content);
       res.json(payload);
     } catch (error) {
       next(error);
@@ -306,7 +318,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
       }
 
       const range = getPeriodRangeInShanghai(period);
-      const summary = repository.getSummary(range);
+      const summary = await repository.getSummary(range);
       if (summary.totalRuns === 0) {
         const payload: PeriodAnalysisResult = {
           period,
@@ -319,14 +331,16 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const recentRuns = repository.listActivities({
-        from: range.from,
-        to: range.to,
-        page: 1,
-        pageSize: 20,
-        sortBy: 'start_date_local',
-        sortDir: 'desc',
-      }).items;
+      const recentRuns = (
+        await repository.listActivities({
+          from: range.from,
+          to: range.to,
+          page: 1,
+          pageSize: 20,
+          sortBy: 'start_date_local',
+          sortDir: 'desc',
+        })
+      ).items;
 
       const content = await options.analyzePeriod({
         period,
@@ -349,7 +363,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     }
   });
 
-  app.post('/api/training-plans', (req, res, next) => {
+  app.post('/api/training-plans', async (req, res, next) => {
     try {
       const { date, planText } = req.body;
 
@@ -363,10 +377,11 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const plan = repository.createTrainingPlan(date, planText);
+      const plan = await repository.createTrainingPlan(date, planText);
       res.status(201).json(plan);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+      const pgError = error as { code?: string; message?: string };
+      if (pgError.code === '23505') {
         res.status(409).json({ error: 'A training plan already exists for this date.' });
         return;
       }
@@ -374,7 +389,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     }
   });
 
-  app.get('/api/training-plans/:date', (req, res, next) => {
+  app.get('/api/training-plans/:date', async (req, res, next) => {
     try {
       const date = req.params.date;
 
@@ -383,7 +398,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const plan = repository.getTrainingPlanByDate(date);
+      const plan = await repository.getTrainingPlanByDate(date);
       if (!plan) {
         res.status(404).json({ error: 'Training plan not found for this date.' });
         return;
@@ -395,7 +410,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     }
   });
 
-  app.put('/api/training-plans/:date', (req, res, next) => {
+  app.put('/api/training-plans/:date', async (req, res, next) => {
     try {
       const date = req.params.date;
       const { planText } = req.body;
@@ -410,7 +425,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const plan = repository.updateTrainingPlan(date, planText);
+      const plan = await repository.updateTrainingPlan(date, planText);
       if (!plan) {
         res.status(404).json({ error: 'Training plan not found for this date.' });
         return;
@@ -422,7 +437,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
     }
   });
 
-  app.delete('/api/training-plans/:date', (req, res, next) => {
+  app.delete('/api/training-plans/:date', async (req, res, next) => {
     try {
       const date = req.params.date;
 
@@ -431,14 +446,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const deleted = repository.deleteTrainingPlan(date);
+      const deleted = await repository.deleteTrainingPlan(date);
       res.json({ deleted });
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/training-plans', (req, res, next) => {
+  app.get('/api/training-plans', async (req, res, next) => {
     try {
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -448,14 +463,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const plans = repository.getTrainingPlansByRange(from, to);
+      const plans = await repository.getTrainingPlansByRange(from, to);
       res.json(plans);
     } catch (error) {
       next(error);
     }
   });
 
-  app.get('/api/calendar/daily-summary', (req, res, next) => {
+  app.get('/api/calendar/daily-summary', async (req, res, next) => {
     try {
       const year = Number(req.query.year);
       const month = Number(req.query.month);
@@ -470,7 +485,7 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const summary = repository.getDailySummary(year, month);
+      const summary = await repository.getDailySummary(year, month);
       res.json(summary);
     } catch (error) {
       next(error);
@@ -494,12 +509,14 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
 
       let from = requestedFrom;
       if (!full && !from) {
-        const latest = repository.listActivities({
-          page: 1,
-          pageSize: 1,
-          sortBy: 'start_date_local',
-          sortDir: 'desc',
-        }).items[0];
+        const latest = (
+          await repository.listActivities({
+            page: 1,
+            pageSize: 1,
+            sortBy: 'start_date_local',
+            sortDir: 'desc',
+          })
+        ).items[0];
         from = latest?.startDateLocal.slice(0, 10) ?? '1970-01-01';
       }
 

@@ -1,11 +1,377 @@
 import request from 'supertest';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { openDatabase } from '../db/client.js';
-import { createRepository } from '../db/repository.js';
+import type { RunRepository, PersistedActivity } from '../db/repository.js';
+import type {
+  ActivityAiAnalysis,
+  CompletionStatus,
+  DailySummary,
+  DateRangeQuery,
+  RunActivity,
+  TrainingPlan,
+  WeeklyTrendPoint,
+} from '../shared/types.js';
 import { createApp } from './app.js';
 
-const db = openDatabase(':memory:');
-const repo = createRepository(db);
+interface StoredActivity extends PersistedActivity {
+  updatedAt: string;
+}
+
+const shanghaiDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function toShanghaiDate(dateIso: string): string {
+  return shanghaiDateFormatter.format(new Date(dateIso));
+}
+
+function paceFromDistanceAndTime(distanceM: number, movingTimeS: number): number | null {
+  if (!Number.isFinite(distanceM) || !Number.isFinite(movingTimeS) || distanceM <= 0 || movingTimeS <= 0) {
+    return null;
+  }
+  return (movingTimeS * 1000) / distanceM;
+}
+
+function weekStartFromShanghaiDate(dateIso: string): string {
+  const shDate = toShanghaiDate(dateIso);
+  const [year, month, day] = shDate.split('-').map((value) => Number(value));
+  const base = new Date(Date.UTC(year, month - 1, day));
+  const weekday = base.getUTCDay();
+  const mondayOffset = (weekday + 6) % 7;
+  base.setUTCDate(base.getUTCDate() - mondayOffset);
+  const y = base.getUTCFullYear();
+  const m = String(base.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(base.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function buildMonthDateKeys(year: number, month: number): string[] {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return [];
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const monthText = String(month).padStart(2, '0');
+  return Array.from({ length: daysInMonth }, (_, idx) => `${year}-${monthText}-${String(idx + 1).padStart(2, '0')}`);
+}
+
+function createInMemoryRepository(): RunRepository {
+  const activities = new Map<number, StoredActivity>();
+  const analyses = new Map<number, ActivityAiAnalysis>();
+  const trainingPlans = new Map<string, TrainingPlan>();
+  let trainingPlanId = 1;
+
+  const toRunActivity = (activity: StoredActivity): RunActivity => {
+    const athleteMaxHeartrate = Array.from(activities.values()).reduce<number | null>((max, item) => {
+      if (item.maxHeartrate == null) {
+        return max;
+      }
+      if (max == null) {
+        return item.maxHeartrate;
+      }
+      return item.maxHeartrate > max ? item.maxHeartrate : max;
+    }, null);
+
+    return {
+      stravaId: activity.stravaId,
+      name: activity.name,
+      deviceName: activity.deviceName ?? null,
+      athleteMaxHeartrate,
+      startDateLocal: activity.startDateLocal,
+      distanceM: activity.distanceM,
+      movingTimeS: activity.movingTimeS,
+      elapsedTimeS: activity.elapsedTimeS,
+      totalElevationGainM: activity.totalElevationGainM,
+      averageSpeedMps: activity.averageSpeedMps,
+      maxSpeedMps: activity.maxSpeedMps,
+      paceSecPerKm: paceFromDistanceAndTime(activity.distanceM, activity.movingTimeS),
+      averageHeartrate: activity.averageHeartrate,
+      maxHeartrate: activity.maxHeartrate,
+      averageCadence: activity.averageCadence,
+      calories: activity.calories ?? null,
+      sufferScore: activity.sufferScore,
+      mapSummaryPolyline: activity.mapSummaryPolyline,
+      mapPolyline: activity.mapPolyline,
+      splits: activity.splits,
+      heartRateZones: activity.heartRateZones,
+      trendPoints: activity.trendPoints,
+      updatedAt: activity.updatedAt,
+    };
+  };
+
+  const filterByRange = (range: DateRangeQuery): StoredActivity[] => {
+    return Array.from(activities.values()).filter((item) => {
+      const shDate = toShanghaiDate(item.startDateLocal);
+      if (range.from && shDate < range.from) {
+        return false;
+      }
+      if (range.to && shDate > range.to) {
+        return false;
+      }
+      return true;
+    });
+  };
+
+  return {
+    async upsertRunActivity(activity: PersistedActivity): Promise<'created' | 'updated'> {
+      const existed = activities.has(activity.stravaId);
+      activities.set(activity.stravaId, {
+        ...activity,
+        updatedAt: new Date().toISOString(),
+      });
+      return existed ? 'updated' : 'created';
+    },
+
+    async getSummary(range: DateRangeQuery) {
+      const filtered = filterByRange(range);
+      const totalRuns = filtered.length;
+      const totalDistanceM = filtered.reduce((sum, item) => sum + item.distanceM, 0);
+      const totalMovingTimeS = filtered.reduce((sum, item) => sum + item.movingTimeS, 0);
+      const totalElevationGainM = filtered.reduce((sum, item) => sum + item.totalElevationGainM, 0);
+      const heartrateSamples = filtered.map((item) => item.averageHeartrate).filter((item): item is number => item != null);
+      const paces = filtered
+        .map((item) => paceFromDistanceAndTime(item.distanceM, item.movingTimeS))
+        .filter((value): value is number => value != null);
+
+      return {
+        totalRuns,
+        totalDistanceM,
+        totalMovingTimeS,
+        totalElevationGainM,
+        averagePaceSecPerKm: paceFromDistanceAndTime(totalDistanceM, totalMovingTimeS),
+        bestPaceSecPerKm: paces.length > 0 ? Math.min(...paces) : null,
+        averageHeartrate:
+          heartrateSamples.length > 0
+            ? heartrateSamples.reduce((sum, value) => sum + value, 0) / heartrateSamples.length
+            : null,
+      };
+    },
+
+    async getWeeklyTrends(range: DateRangeQuery): Promise<WeeklyTrendPoint[]> {
+      const grouped = new Map<string, { distanceM: number; movingTimeS: number; runs: number }>();
+      for (const item of filterByRange(range)) {
+        const key = weekStartFromShanghaiDate(item.startDateLocal);
+        const current = grouped.get(key) ?? { distanceM: 0, movingTimeS: 0, runs: 0 };
+        current.distanceM += item.distanceM;
+        current.movingTimeS += item.movingTimeS;
+        current.runs += 1;
+        grouped.set(key, current);
+      }
+
+      return Array.from(grouped.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([weekStart, value]) => ({
+          weekStart,
+          totalDistanceM: value.distanceM,
+          totalMovingTimeS: value.movingTimeS,
+          averagePaceSecPerKm: paceFromDistanceAndTime(value.distanceM, value.movingTimeS),
+          runs: value.runs,
+        }));
+    },
+
+    async listActivities(query) {
+      const page = Math.max(1, Number(query.page ?? 1));
+      const pageSize = Math.min(100, Math.max(1, Number(query.pageSize ?? 20)));
+      const sortBy = query.sortBy ?? 'start_date_local';
+      const sortDir = query.sortDir === 'asc' ? 1 : -1;
+      const filtered = filterByRange(query);
+
+      const sorted = [...filtered].sort((a, b) => {
+        const valueA =
+          sortBy === 'distance_m'
+            ? a.distanceM
+            : sortBy === 'pace_sec_per_km'
+              ? paceFromDistanceAndTime(a.distanceM, a.movingTimeS) ?? Number.POSITIVE_INFINITY
+              : Date.parse(a.startDateLocal);
+        const valueB =
+          sortBy === 'distance_m'
+            ? b.distanceM
+            : sortBy === 'pace_sec_per_km'
+              ? paceFromDistanceAndTime(b.distanceM, b.movingTimeS) ?? Number.POSITIVE_INFINITY
+              : Date.parse(b.startDateLocal);
+
+        if (valueA === valueB) {
+          return Date.parse(b.startDateLocal) - Date.parse(a.startDateLocal);
+        }
+
+        return valueA > valueB ? sortDir : -sortDir;
+      });
+
+      const start = (page - 1) * pageSize;
+      const items = sorted.slice(start, start + pageSize).map(toRunActivity);
+
+      return {
+        page,
+        pageSize,
+        total: sorted.length,
+        items,
+      };
+    },
+
+    async getActivityById(stravaId: number): Promise<RunActivity | null> {
+      const activity = activities.get(stravaId);
+      if (!activity) {
+        return null;
+      }
+      return toRunActivity(activity);
+    },
+
+    async getActivityAnalysis(stravaId: number): Promise<ActivityAiAnalysis | null> {
+      const item = analyses.get(stravaId);
+      if (!item) {
+        return null;
+      }
+      return {
+        ...item,
+        cached: true,
+      };
+    },
+
+    async saveActivityAnalysis(stravaId: number, content: string): Promise<ActivityAiAnalysis> {
+      const result: ActivityAiAnalysis = {
+        activityId: stravaId,
+        content,
+        generatedAt: new Date().toISOString(),
+        cached: false,
+      };
+      analyses.set(stravaId, result);
+      return result;
+    },
+
+    async getCalendarFilterOptions() {
+      const rows = filterByRange({}).map((item) => toShanghaiDate(item.startDateLocal));
+      const years: number[] = [];
+      const monthsByYear: Record<string, number[]> = {};
+
+      for (const date of rows) {
+        const [yearRaw, monthRaw] = date.split('-');
+        const year = Number(yearRaw);
+        const month = Number(monthRaw);
+        if (!years.includes(year)) {
+          years.push(year);
+        }
+        const key = String(year);
+        monthsByYear[key] ??= [];
+        if (!monthsByYear[key].includes(month)) {
+          monthsByYear[key].push(month);
+        }
+      }
+
+      years.sort((a, b) => b - a);
+      for (const key of Object.keys(monthsByYear)) {
+        monthsByYear[key].sort((a, b) => a - b);
+      }
+
+      return { years, monthsByYear };
+    },
+
+    async createTrainingPlan(date: string, planText: string): Promise<TrainingPlan> {
+      if (trainingPlans.has(date)) {
+        const duplicateError = new Error('duplicate key value violates unique constraint "training_plans_date_key"');
+        (duplicateError as Error & { code?: string }).code = '23505';
+        throw duplicateError;
+      }
+
+      const now = new Date().toISOString();
+      const plan: TrainingPlan = {
+        id: trainingPlanId,
+        date,
+        planText,
+        createdAt: now,
+        updatedAt: now,
+      };
+      trainingPlanId += 1;
+      trainingPlans.set(date, plan);
+      return plan;
+    },
+
+    async getTrainingPlanByDate(date: string): Promise<TrainingPlan | null> {
+      return trainingPlans.get(date) ?? null;
+    },
+
+    async updateTrainingPlan(date: string, planText: string): Promise<TrainingPlan | null> {
+      const existing = trainingPlans.get(date);
+      if (!existing) {
+        return null;
+      }
+
+      const updated: TrainingPlan = {
+        ...existing,
+        planText,
+        updatedAt: new Date().toISOString(),
+      };
+      trainingPlans.set(date, updated);
+      return updated;
+    },
+
+    async deleteTrainingPlan(date: string): Promise<boolean> {
+      return trainingPlans.delete(date);
+    },
+
+    async getTrainingPlansByRange(from?: string, to?: string): Promise<TrainingPlan[]> {
+      return Array.from(trainingPlans.values())
+        .filter((plan) => {
+          if (from && plan.date < from) {
+            return false;
+          }
+          if (to && plan.date > to) {
+            return false;
+          }
+          return true;
+        })
+        .sort((a, b) => b.date.localeCompare(a.date));
+    },
+
+    async getDailySummary(year: number, month: number): Promise<DailySummary[]> {
+      const days = buildMonthDateKeys(year, month);
+      if (days.length === 0) {
+        return [];
+      }
+
+      const from = days[0];
+      const to = days[days.length - 1];
+      const [plans, activitiesByRange] = await Promise.all([
+        this.getTrainingPlansByRange(from, to),
+        this.listActivities({
+          from,
+          to,
+          page: 1,
+          pageSize: 1000,
+          sortBy: 'start_date_local',
+          sortDir: 'asc',
+        }),
+      ]);
+
+      const planMap = new Map(plans.map((plan) => [plan.date, plan]));
+      const activityMap = new Map<string, RunActivity[]>();
+      for (const activity of activitiesByRange.items) {
+        const dateKey = toShanghaiDate(activity.startDateLocal);
+        if (!activityMap.has(dateKey)) {
+          activityMap.set(dateKey, []);
+        }
+        activityMap.get(dateKey)?.push(activity);
+      }
+
+      return days.map((date) => {
+        const plan = planMap.get(date) ?? null;
+        const activities = activityMap.get(date) ?? [];
+        let completionStatus: CompletionStatus = 'no_plan';
+        if (plan) {
+          completionStatus = activities.length > 0 ? 'completed' : 'missed';
+        }
+        return {
+          date,
+          plan,
+          activities,
+          completionStatus,
+        };
+      });
+    },
+  };
+}
+
+const repo = createInMemoryRepository();
 const syncActivities = vi.fn(async (_input: { full?: boolean; from?: string }, _repository: typeof repo) => ({
   totalFetchedRuns: 3,
   created: 1,
@@ -35,8 +401,8 @@ const app = createApp(repo, {
   syncActivities,
 });
 
-beforeAll(() => {
-  repo.upsertRunActivity({
+beforeAll(async () => {
+  await repo.upsertRunActivity({
     stravaId: 101,
     name: 'Morning Run',
     startDateLocal: '2026-01-01T08:00:00Z',
@@ -73,7 +439,7 @@ beforeAll(() => {
     ],
   });
 
-  repo.upsertRunActivity({
+  await repo.upsertRunActivity({
     stravaId: 102,
     name: 'Tempo',
     startDateLocal: '2026-01-08T08:00:00Z',
@@ -93,7 +459,7 @@ beforeAll(() => {
     splits: [],
   });
 
-  repo.upsertRunActivity({
+  await repo.upsertRunActivity({
     stravaId: 103,
     name: 'Late UTC Run',
     startDateLocal: '2026-01-01T23:30:00Z',
@@ -173,8 +539,8 @@ describe('api', () => {
     expect(persisted.body.content).toContain('本次总结');
   });
 
-  it('applies from/to filters directly on start_date_local date', async () => {
-    const res = await request(app).get('/api/activities?from=2026-01-01&to=2026-01-01');
+  it('applies from/to filters with Asia/Shanghai date boundary', async () => {
+    const res = await request(app).get('/api/activities?from=2026-01-02&to=2026-01-02');
     expect(res.status).toBe(200);
     const ids = res.body.items.map((item: { stravaId: number }) => item.stravaId);
     expect(ids).toContain(103);
@@ -416,9 +782,9 @@ describe('calendar daily summary api', () => {
 describe('ai analysis with training plan', () => {
   it('adds fallback plan section when analyzer output misses it', async () => {
     const activityId = 9902;
-    const activityDate = '2026-02-01';
+    const activityDate = '2026-03-01';
 
-    repo.upsertRunActivity({
+    await repo.upsertRunActivity({
       stravaId: activityId,
       name: 'Fallback Plan Run',
       startDateLocal: `${activityDate}T06:00:00Z`,
@@ -457,7 +823,7 @@ describe('ai analysis with training plan', () => {
     const activityId = 9901;
     const activityDate = '2026-01-31';
 
-    repo.upsertRunActivity({
+    await repo.upsertRunActivity({
       stravaId: activityId,
       name: 'Cache Freshness Run',
       startDateLocal: `${activityDate}T07:30:00Z`,
@@ -499,13 +865,35 @@ describe('ai analysis with training plan', () => {
   });
 
   it('includes plan completion when plan exists', async () => {
-    // Add a plan for 2026-01-01 (activity 101 date)
+    const activityId = 9903;
+    const activityDate = '2026-03-03';
+
+    await repo.upsertRunActivity({
+      stravaId: activityId,
+      name: 'Planned Tempo Run',
+      startDateLocal: `${activityDate}T07:00:00Z`,
+      distanceM: 10000,
+      movingTimeS: 3600,
+      elapsedTimeS: 3650,
+      totalElevationGainM: 48,
+      averageSpeedMps: 2.78,
+      maxSpeedMps: 4.1,
+      averageHeartrate: 152,
+      maxHeartrate: 171,
+      averageCadence: 84,
+      sufferScore: 41,
+      mapSummaryPolyline: null,
+      mapPolyline: null,
+      rawJson: '{}',
+      splits: [],
+    });
+
     await request(app).post('/api/training-plans').send({
-      date: '2026-01-01',
+      date: activityDate,
       planText: '目标: 10km 配速 6:00/km',
     });
 
-    const res = await request(app).post('/api/activities/101/analysis').send({ force: true });
+    const res = await request(app).post(`/api/activities/${activityId}/analysis`).send({ force: true });
     expect(res.status).toBe(200);
     expect(res.body.content).toContain('计划完成度');
     expect(res.body.content).toContain('目标: 10km 配速 6:00/km');

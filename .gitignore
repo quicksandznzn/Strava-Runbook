@@ -6,3 +6,5 @@ dist
 .DS_Store
 .idea/
 data/
+docker/data/postgresql/*
+!docker/data/postgresql/.gitkeep

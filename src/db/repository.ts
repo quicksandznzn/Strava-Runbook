@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Pool } from 'pg';
 import type {
   ActivityAiAnalysis,
   ActivityQuery,
@@ -73,6 +73,23 @@ interface WhereClauseResult {
   params: Array<string | number>;
 }
 
+export interface RunRepository {
+  upsertRunActivity(activity: PersistedActivity): Promise<'created' | 'updated'>;
+  getSummary(range: DateRangeQuery): Promise<SummaryMetrics>;
+  getWeeklyTrends(range: DateRangeQuery): Promise<WeeklyTrendPoint[]>;
+  listActivities(inputQuery: Partial<ActivityQuery> & DateRangeQuery): Promise<PaginatedActivities>;
+  getActivityById(stravaId: number): Promise<RunActivity | null>;
+  getActivityAnalysis(stravaId: number): Promise<ActivityAiAnalysis | null>;
+  saveActivityAnalysis(stravaId: number, content: string): Promise<ActivityAiAnalysis>;
+  getCalendarFilterOptions(): Promise<CalendarFilterOptions>;
+  createTrainingPlan(date: string, planText: string): Promise<TrainingPlan>;
+  getTrainingPlanByDate(date: string): Promise<TrainingPlan | null>;
+  updateTrainingPlan(date: string, planText: string): Promise<TrainingPlan | null>;
+  deleteTrainingPlan(date: string): Promise<boolean>;
+  getTrainingPlansByRange(from?: string, to?: string): Promise<TrainingPlan[]>;
+  getDailySummary(year: number, month: number): Promise<DailySummary[]>;
+}
+
 const DEFAULT_QUERY: ActivityQuery = {
   page: 1,
   pageSize: 20,
@@ -80,25 +97,21 @@ const DEFAULT_QUERY: ActivityQuery = {
   sortDir: 'desc',
 };
 
-function formatLocalDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function buildDateWhere(range: DateRangeQuery): WhereClauseResult {
+function buildDateWhere(range: DateRangeQuery, startIndex = 1): WhereClauseResult {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
+  let index = startIndex;
 
   if (range.from) {
-    clauses.push('date(start_date_local) >= date(?)');
+    clauses.push(`DATE(start_date_local AT TIME ZONE 'Asia/Shanghai') >= $${index}::date`);
     params.push(range.from);
+    index += 1;
   }
 
   if (range.to) {
-    clauses.push('date(start_date_local) <= date(?)');
+    clauses.push(`DATE(start_date_local AT TIME ZONE 'Asia/Shanghai') <= $${index}::date`);
     params.push(range.to);
+    index += 1;
   }
 
   if (clauses.length === 0) {
@@ -111,18 +124,21 @@ function buildDateWhere(range: DateRangeQuery): WhereClauseResult {
   };
 }
 
-function buildPlanDateWhere(range: DateRangeQuery): WhereClauseResult {
+function buildPlanDateWhere(range: DateRangeQuery, startIndex = 1): WhereClauseResult {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
+  let index = startIndex;
 
   if (range.from) {
-    clauses.push('date(date) >= date(?)');
+    clauses.push(`date >= $${index}::date`);
     params.push(range.from);
+    index += 1;
   }
 
   if (range.to) {
-    clauses.push('date(date) <= date(?)');
+    clauses.push(`date <= $${index}::date`);
     params.push(range.to);
+    index += 1;
   }
 
   if (clauses.length === 0) {
@@ -133,6 +149,152 @@ function buildPlanDateWhere(range: DateRangeQuery): WhereClauseResult {
     clause: `WHERE ${clauses.join(' AND ')}`,
     params,
   };
+}
+
+function parseJsonArray(rawValue: unknown): unknown[] | undefined {
+  if (Array.isArray(rawValue)) {
+    return rawValue;
+  }
+
+  if (typeof rawValue !== 'string' || rawValue.trim() === '') {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseHeartRateZones(rawValue: unknown): RunHeartRateZone[] | undefined {
+  const parsed = parseJsonArray(rawValue);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const zones: RunHeartRateZone[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    const object = item as Record<string, unknown>;
+    const zone = typeof object.zone === 'string' ? object.zone : '';
+    const minBpm = Number(object.minBpm);
+    const timeS = Number(object.timeS);
+    const maxRaw = object.maxBpm;
+    const maxBpm =
+      maxRaw == null
+        ? null
+        : Number.isFinite(Number(maxRaw))
+          ? Number(maxRaw)
+          : null;
+    const percentageRaw = object.percentage;
+    const percentage =
+      percentageRaw == null
+        ? null
+        : Number.isFinite(Number(percentageRaw))
+          ? Number(percentageRaw)
+          : null;
+
+    if (!zone || !Number.isFinite(minBpm) || !Number.isFinite(timeS)) {
+      continue;
+    }
+
+    zones.push({
+      zone,
+      minBpm,
+      maxBpm,
+      timeS,
+      percentage,
+    });
+  }
+
+  return zones.length > 0 ? zones : undefined;
+}
+
+function parseTrendPoints(rawValue: unknown): RunTrendPoint[] | undefined {
+  const parsed = parseJsonArray(rawValue);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const points: RunTrendPoint[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    const object = item as Record<string, unknown>;
+    const elapsedTimeS = Number(object.elapsedTimeS);
+    const distanceRaw = object.distanceM;
+    const paceRaw = object.paceSecPerKm;
+    const heartrateRaw = object.heartrate;
+    const distanceM =
+      distanceRaw == null
+        ? null
+        : Number.isFinite(Number(distanceRaw))
+          ? Number(distanceRaw)
+          : null;
+    const paceSecPerKm =
+      paceRaw == null
+        ? null
+        : Number.isFinite(Number(paceRaw))
+          ? Number(paceRaw)
+          : null;
+    const heartrate =
+      heartrateRaw == null
+        ? null
+        : Number.isFinite(Number(heartrateRaw))
+          ? Number(heartrateRaw)
+          : null;
+
+    if (!Number.isFinite(elapsedTimeS) || elapsedTimeS < 0) {
+      continue;
+    }
+
+    points.push({
+      elapsedTimeS: Math.round(elapsedTimeS),
+      distanceM,
+      paceSecPerKm,
+      heartrate,
+    });
+  }
+
+  points.sort((a, b) => a.elapsedTimeS - b.elapsedTimeS);
+  return points.length > 0 ? points : undefined;
+}
+
+function toIsoString(value: unknown): string {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return new Date().toISOString();
+}
+
+const shanghaiDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function toShanghaiDateKey(dateIso: string): string {
+  return shanghaiDateFormatter.format(new Date(dateIso));
+}
+
+function buildMonthDateKeys(year: number, month: number): string[] {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return [];
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const monthText = String(month).padStart(2, '0');
+  return Array.from({ length: daysInMonth }, (_, idx) => `${year}-${monthText}-${String(idx + 1).padStart(2, '0')}`);
 }
 
 function mapRunActivity(row: Record<string, unknown>): RunActivity {
@@ -148,7 +310,7 @@ function mapRunActivity(row: Record<string, unknown>): RunActivity {
     name: String(row.name),
     deviceName: row.device_name == null ? null : String(row.device_name),
     athleteMaxHeartrate,
-    startDateLocal: String(row.start_date_local),
+    startDateLocal: toIsoString(row.start_date_local),
     distanceM: Number(row.distance_m),
     movingTimeS: Number(row.moving_time_s),
     elapsedTimeS: Number(row.elapsed_time_s),
@@ -165,7 +327,7 @@ function mapRunActivity(row: Record<string, unknown>): RunActivity {
     mapPolyline: row.map_polyline == null ? null : String(row.map_polyline),
     heartRateZones: parseHeartRateZones(row.heartrate_zones_json),
     trendPoints: parseTrendPoints(row.trend_points_json),
-    updatedAt: String(row.updated_at),
+    updatedAt: toIsoString(row.updated_at),
   };
 }
 
@@ -183,232 +345,133 @@ function mapRunSplit(row: Record<string, unknown>): RunSplit {
   };
 }
 
-function parseHeartRateZones(rawValue: unknown): RunHeartRateZone[] | undefined {
-  if (typeof rawValue !== 'string' || rawValue.trim() === '') {
-    return undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(rawValue) as unknown;
-    if (!Array.isArray(parsed)) {
-      return undefined;
-    }
-
-    const zones: RunHeartRateZone[] = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== 'object') {
-        continue;
-      }
-
-      const object = item as Record<string, unknown>;
-      const zone = typeof object.zone === 'string' ? object.zone : '';
-      const minBpm = Number(object.minBpm);
-      const timeS = Number(object.timeS);
-      const maxRaw = object.maxBpm;
-      const maxBpm =
-        maxRaw == null
-          ? null
-          : Number.isFinite(Number(maxRaw))
-            ? Number(maxRaw)
-            : null;
-      const percentageRaw = object.percentage;
-      const percentage =
-        percentageRaw == null
-          ? null
-          : Number.isFinite(Number(percentageRaw))
-            ? Number(percentageRaw)
-            : null;
-
-      if (!zone || !Number.isFinite(minBpm) || !Number.isFinite(timeS)) {
-        continue;
-      }
-
-      zones.push({
-        zone,
-        minBpm,
-        maxBpm,
-        timeS,
-        percentage,
-      });
-    }
-
-    return zones.length > 0 ? zones : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseTrendPoints(rawValue: unknown): RunTrendPoint[] | undefined {
-  if (typeof rawValue !== 'string' || rawValue.trim() === '') {
-    return undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(rawValue) as unknown;
-    if (!Array.isArray(parsed)) {
-      return undefined;
-    }
-
-    const points: RunTrendPoint[] = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== 'object') {
-        continue;
-      }
-
-      const object = item as Record<string, unknown>;
-      const elapsedTimeS = Number(object.elapsedTimeS);
-      const distanceRaw = object.distanceM;
-      const paceRaw = object.paceSecPerKm;
-      const heartrateRaw = object.heartrate;
-      const distanceM =
-        distanceRaw == null
-          ? null
-          : Number.isFinite(Number(distanceRaw))
-            ? Number(distanceRaw)
-            : null;
-      const paceSecPerKm =
-        paceRaw == null
-          ? null
-          : Number.isFinite(Number(paceRaw))
-            ? Number(paceRaw)
-            : null;
-      const heartrate =
-        heartrateRaw == null
-          ? null
-          : Number.isFinite(Number(heartrateRaw))
-            ? Number(heartrateRaw)
-            : null;
-
-      if (!Number.isFinite(elapsedTimeS) || elapsedTimeS < 0) {
-        continue;
-      }
-
-      points.push({
-        elapsedTimeS: Math.round(elapsedTimeS),
-        distanceM,
-        paceSecPerKm,
-        heartrate,
-      });
-    }
-
-    points.sort((a, b) => a.elapsedTimeS - b.elapsedTimeS);
-    return points.length > 0 ? points : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export function createRepository(db: Database.Database) {
-  const existsStmt = db.prepare('SELECT 1 FROM activities WHERE strava_id = ?');
-  const upsertStmt = db.prepare(`
-    INSERT INTO activities (
-      strava_id, name, device_name, start_date_local, distance_m, moving_time_s, elapsed_time_s,
-      total_elevation_gain_m, average_speed_mps, max_speed_mps,
-      average_heartrate, max_heartrate, average_cadence, calories, suffer_score,
-      map_summary_polyline, map_polyline, heartrate_zones_json, trend_points_json, raw_json, updated_at
-    ) VALUES (
-      @strava_id, @name, @device_name, @start_date_local, @distance_m, @moving_time_s, @elapsed_time_s,
-      @total_elevation_gain_m, @average_speed_mps, @max_speed_mps,
-      @average_heartrate, @max_heartrate, @average_cadence, @calories, @suffer_score,
-      @map_summary_polyline, @map_polyline, @heartrate_zones_json, @trend_points_json, @raw_json, @updated_at
-    )
-    ON CONFLICT(strava_id)
-    DO UPDATE SET
-      name = excluded.name,
-      device_name = excluded.device_name,
-      start_date_local = excluded.start_date_local,
-      distance_m = excluded.distance_m,
-      moving_time_s = excluded.moving_time_s,
-      elapsed_time_s = excluded.elapsed_time_s,
-      total_elevation_gain_m = excluded.total_elevation_gain_m,
-      average_speed_mps = excluded.average_speed_mps,
-      max_speed_mps = excluded.max_speed_mps,
-      average_heartrate = excluded.average_heartrate,
-      max_heartrate = excluded.max_heartrate,
-      average_cadence = excluded.average_cadence,
-      calories = excluded.calories,
-      suffer_score = excluded.suffer_score,
-      map_summary_polyline = excluded.map_summary_polyline,
-      map_polyline = excluded.map_polyline,
-      heartrate_zones_json = excluded.heartrate_zones_json,
-      trend_points_json = excluded.trend_points_json,
-      raw_json = excluded.raw_json,
-      updated_at = excluded.updated_at
-  `);
-
-  const deleteSplitsStmt = db.prepare('DELETE FROM activity_splits WHERE activity_strava_id = ?');
-  const insertSplitStmt = db.prepare(`
-    INSERT INTO activity_splits (
-      activity_strava_id, split_index, distance_m, elapsed_time_s,
-      elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate, average_cadence, calories
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const upsertAnalysisStmt = db.prepare(`
-    INSERT INTO activity_ai_analysis (
-      activity_strava_id, content, generated_at
-    ) VALUES (?, ?, ?)
-    ON CONFLICT(activity_strava_id)
-    DO UPDATE SET
-      content = excluded.content,
-      generated_at = excluded.generated_at
-  `);
-
-  const upsertTransaction = db.transaction((activity: PersistedActivity) => {
-    const existed = Boolean(existsStmt.get(activity.stravaId));
-
-    upsertStmt.run({
-      strava_id: activity.stravaId,
-      name: activity.name,
-      device_name: activity.deviceName ?? null,
-      start_date_local: activity.startDateLocal,
-      distance_m: activity.distanceM,
-      moving_time_s: activity.movingTimeS,
-      elapsed_time_s: activity.elapsedTimeS,
-      total_elevation_gain_m: activity.totalElevationGainM,
-      average_speed_mps: activity.averageSpeedMps,
-      max_speed_mps: activity.maxSpeedMps,
-      average_heartrate: activity.averageHeartrate,
-      max_heartrate: activity.maxHeartrate,
-      average_cadence: activity.averageCadence,
-      calories: activity.calories ?? null,
-      suffer_score: activity.sufferScore,
-      map_summary_polyline: activity.mapSummaryPolyline,
-      map_polyline: activity.mapPolyline,
-      heartrate_zones_json: activity.heartRateZones ? JSON.stringify(activity.heartRateZones) : null,
-      trend_points_json: activity.trendPoints ? JSON.stringify(activity.trendPoints) : null,
-      raw_json: activity.rawJson,
-      updated_at: new Date().toISOString(),
-    });
-
-    deleteSplitsStmt.run(activity.stravaId);
-    for (const split of activity.splits) {
-      insertSplitStmt.run(
-        activity.stravaId,
-        split.splitIndex,
-        split.distanceM,
-        split.elapsedTimeS,
-        split.elevationDifferenceM,
-        split.averageSpeedMps,
-        split.paceSecPerKm,
-        split.averageHeartrate,
-        split.averageCadence,
-        split.calories,
-      );
-    }
-
-    return existed ? 'updated' : 'created';
-  });
-
+function mapTrainingPlan(row: Record<string, unknown>): TrainingPlan {
   return {
-    upsertRunActivity(activity: PersistedActivity): 'created' | 'updated' {
-      return upsertTransaction(activity) as 'created' | 'updated';
+    id: Number(row.id),
+    date: String(row.date),
+    planText: String(row.plan_text),
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+export function createRepository(db: Pool): RunRepository {
+  return {
+    async upsertRunActivity(activity: PersistedActivity): Promise<'created' | 'updated'> {
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+
+        const existsResult = await client.query('SELECT 1 FROM activities WHERE strava_id = $1', [activity.stravaId]);
+        const existed = (existsResult.rowCount ?? 0) > 0;
+
+        await client.query(
+          `
+          INSERT INTO activities (
+            strava_id, name, device_name, start_date_local, distance_m, moving_time_s, elapsed_time_s,
+            total_elevation_gain_m, average_speed_mps, max_speed_mps,
+            average_heartrate, max_heartrate, average_cadence, calories, suffer_score,
+            map_summary_polyline, map_polyline, heartrate_zones_json, trend_points_json, raw_json, updated_at
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10,
+            $11, $12, $13, $14, $15,
+            $16, $17, $18::jsonb, $19::jsonb, $20::jsonb, NOW()
+          )
+          ON CONFLICT(strava_id)
+          DO UPDATE SET
+            name = EXCLUDED.name,
+            device_name = EXCLUDED.device_name,
+            start_date_local = EXCLUDED.start_date_local,
+            distance_m = EXCLUDED.distance_m,
+            moving_time_s = EXCLUDED.moving_time_s,
+            elapsed_time_s = EXCLUDED.elapsed_time_s,
+            total_elevation_gain_m = EXCLUDED.total_elevation_gain_m,
+            average_speed_mps = EXCLUDED.average_speed_mps,
+            max_speed_mps = EXCLUDED.max_speed_mps,
+            average_heartrate = EXCLUDED.average_heartrate,
+            max_heartrate = EXCLUDED.max_heartrate,
+            average_cadence = EXCLUDED.average_cadence,
+            calories = EXCLUDED.calories,
+            suffer_score = EXCLUDED.suffer_score,
+            map_summary_polyline = EXCLUDED.map_summary_polyline,
+            map_polyline = EXCLUDED.map_polyline,
+            heartrate_zones_json = EXCLUDED.heartrate_zones_json,
+            trend_points_json = EXCLUDED.trend_points_json,
+            raw_json = EXCLUDED.raw_json,
+            updated_at = NOW()
+          `,
+          [
+            activity.stravaId,
+            activity.name,
+            activity.deviceName ?? null,
+            activity.startDateLocal,
+            activity.distanceM,
+            activity.movingTimeS,
+            activity.elapsedTimeS,
+            activity.totalElevationGainM,
+            activity.averageSpeedMps,
+            activity.maxSpeedMps,
+            activity.averageHeartrate,
+            activity.maxHeartrate,
+            activity.averageCadence,
+            activity.calories ?? null,
+            activity.sufferScore,
+            activity.mapSummaryPolyline,
+            activity.mapPolyline,
+            activity.heartRateZones && activity.heartRateZones.length > 0 ? JSON.stringify(activity.heartRateZones) : null,
+            activity.trendPoints && activity.trendPoints.length > 0 ? JSON.stringify(activity.trendPoints) : null,
+            activity.rawJson,
+          ],
+        );
+
+        await client.query('DELETE FROM activity_splits WHERE activity_strava_id = $1', [activity.stravaId]);
+
+        for (const split of activity.splits) {
+          await client.query(
+            `
+            INSERT INTO activity_splits (
+              activity_strava_id,
+              split_index,
+              distance_m,
+              elapsed_time_s,
+              elevation_difference_m,
+              average_speed_mps,
+              pace_sec_per_km,
+              average_heartrate,
+              average_cadence,
+              calories
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            `,
+            [
+              activity.stravaId,
+              split.splitIndex,
+              split.distanceM,
+              split.elapsedTimeS,
+              split.elevationDifferenceM,
+              split.averageSpeedMps,
+              split.paceSecPerKm,
+              split.averageHeartrate,
+              split.averageCadence,
+              split.calories,
+            ],
+          );
+        }
+
+        await client.query('COMMIT');
+        return existed ? 'updated' : 'created';
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
-    getSummary(range: DateRangeQuery): SummaryMetrics {
+    async getSummary(range: DateRangeQuery): Promise<SummaryMetrics> {
       const where = buildDateWhere(range);
-      const row = db
-        .prepare(
-          `
+      const { rows } = await db.query(
+        `
           SELECT
             COUNT(*) AS total_runs,
             COALESCE(SUM(distance_m), 0) AS total_distance_m,
@@ -419,57 +482,56 @@ export function createRepository(db: Database.Database) {
           FROM activities
           ${where.clause}
         `,
-        )
-        .get(...where.params) as Record<string, unknown>;
+        where.params,
+      );
 
-      const totalDistanceM = Number(row.total_distance_m);
-      const totalMovingTimeS = Number(row.total_moving_time_s);
+      const row = (rows[0] ?? {}) as Record<string, unknown>;
+      const totalDistanceM = Number(row.total_distance_m ?? 0);
+      const totalMovingTimeS = Number(row.total_moving_time_s ?? 0);
       return {
-        totalRuns: Number(row.total_runs),
+        totalRuns: Number(row.total_runs ?? 0),
         totalDistanceM,
         totalMovingTimeS,
-        totalElevationGainM: Number(row.total_elevation_gain_m),
+        totalElevationGainM: Number(row.total_elevation_gain_m ?? 0),
         averagePaceSecPerKm: paceFromDistanceAndTime(totalDistanceM, totalMovingTimeS),
         bestPaceSecPerKm: row.best_pace_sec_per_km == null ? null : Number(row.best_pace_sec_per_km),
         averageHeartrate: row.average_heartrate == null ? null : Number(row.average_heartrate),
       };
     },
 
-    getWeeklyTrends(range: DateRangeQuery): WeeklyTrendPoint[] {
+    async getWeeklyTrends(range: DateRangeQuery): Promise<WeeklyTrendPoint[]> {
       const where = buildDateWhere(range);
-      const rows = db
-        .prepare(
-          `
+      const { rows } = await db.query(
+        `
           SELECT
-            strftime('%Y', start_date_local) AS year,
-            strftime('%W', start_date_local) AS week,
-            MIN(date(start_date_local)) AS week_start,
+            DATE_TRUNC('week', start_date_local AT TIME ZONE 'Asia/Shanghai')::date AS week_start,
             SUM(distance_m) AS total_distance_m,
             SUM(moving_time_s) AS total_moving_time_s,
             COUNT(*) AS runs
           FROM activities
           ${where.clause}
-          GROUP BY year, week
-          ORDER BY year ASC, week ASC
+          GROUP BY week_start
+          ORDER BY week_start ASC
         `,
-        )
-        .all(...where.params) as Array<Record<string, unknown>>;
+        where.params,
+      );
 
       return rows.map((row) => {
-        const totalDistanceM = Number(row.total_distance_m);
-        const totalMovingTimeS = Number(row.total_moving_time_s);
+        const mapped = row as Record<string, unknown>;
+        const totalDistanceM = Number(mapped.total_distance_m);
+        const totalMovingTimeS = Number(mapped.total_moving_time_s);
 
         return {
-          weekStart: String(row.week_start),
+          weekStart: toIsoString(mapped.week_start).slice(0, 10),
           totalDistanceM,
           totalMovingTimeS,
           averagePaceSecPerKm: paceFromDistanceAndTime(totalDistanceM, totalMovingTimeS),
-          runs: Number(row.runs),
+          runs: Number(mapped.runs),
         };
       });
     },
 
-    listActivities(inputQuery: Partial<ActivityQuery> & DateRangeQuery): PaginatedActivities {
+    async listActivities(inputQuery: Partial<ActivityQuery> & DateRangeQuery): Promise<PaginatedActivities> {
       const query = {
         ...DEFAULT_QUERY,
         ...inputQuery,
@@ -488,14 +550,14 @@ export function createRepository(db: Database.Database) {
             ? '(moving_time_s * 1000.0 / NULLIF(distance_m, 0))'
             : 'start_date_local';
 
-      const totalRow = db
-        .prepare(`SELECT COUNT(*) AS total FROM activities ${where.clause}`)
-        .get(...where.params) as Record<string, unknown>;
-      const total = Number(totalRow.total);
+      const totalResult = await db.query(`SELECT COUNT(*) AS total FROM activities ${where.clause}`, where.params);
+      const total = Number((totalResult.rows[0] as Record<string, unknown> | undefined)?.total ?? 0);
 
-      const rows = db
-        .prepare(
-          `
+      const limitPlaceholder = `$${where.params.length + 1}`;
+      const offsetPlaceholder = `$${where.params.length + 2}`;
+
+      const { rows } = await db.query(
+        `
           SELECT
             strava_id,
             name,
@@ -514,75 +576,83 @@ export function createRepository(db: Database.Database) {
             suffer_score,
             map_summary_polyline,
             map_polyline,
+            heartrate_zones_json,
+            trend_points_json,
             updated_at,
             (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km
           FROM activities
           ${where.clause}
           ORDER BY ${sortSql} ${sortDir}, start_date_local DESC
-          LIMIT ? OFFSET ?
+          LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}
         `,
-        )
-        .all(...where.params, pageSize, offset) as Array<Record<string, unknown>>;
+        [...where.params, pageSize, offset],
+      );
 
       return {
         page,
         pageSize,
         total,
-        items: rows.map(mapRunActivity),
+        items: rows.map((row) => mapRunActivity(row as Record<string, unknown>)),
       };
     },
 
-    getActivityById(stravaId: number): RunActivity | null {
-      const row = db
-        .prepare(
-          `
+    async getActivityById(stravaId: number): Promise<RunActivity | null> {
+      const activityResult = await db.query(
+        `
           SELECT
             *,
             (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km,
             (SELECT MAX(max_heartrate) FROM activities) AS athlete_max_heartrate
           FROM activities
-          WHERE strava_id = ?
+          WHERE strava_id = $1
         `,
-        )
-        .get(stravaId) as Record<string, unknown> | undefined;
+        [stravaId],
+      );
 
+      const row = activityResult.rows[0] as Record<string, unknown> | undefined;
       if (!row) {
         return null;
       }
 
-      const splitsRows = db
-        .prepare(
-          `
+      const splitsResult = await db.query(
+        `
           SELECT
-            split_index, distance_m, elapsed_time_s,
-            elevation_difference_m, average_speed_mps, pace_sec_per_km, average_heartrate, average_cadence, calories
+            split_index,
+            distance_m,
+            elapsed_time_s,
+            elevation_difference_m,
+            average_speed_mps,
+            pace_sec_per_km,
+            average_heartrate,
+            average_cadence,
+            calories
           FROM activity_splits
-          WHERE activity_strava_id = ?
+          WHERE activity_strava_id = $1
           ORDER BY split_index ASC
         `,
-        )
-        .all(stravaId) as Array<Record<string, unknown>>;
+        [stravaId],
+      );
 
       return {
         ...mapRunActivity(row),
-        splits: splitsRows.map(mapRunSplit),
+        splits: splitsResult.rows.map((split) => mapRunSplit(split as Record<string, unknown>)),
       };
     },
 
-    getActivityAnalysis(stravaId: number): ActivityAiAnalysis | null {
-      const row = db
-        .prepare(
-          `
+    async getActivityAnalysis(stravaId: number): Promise<ActivityAiAnalysis | null> {
+      const result = await db.query(
+        `
           SELECT
             activity_strava_id,
             content,
             generated_at
           FROM activity_ai_analysis
-          WHERE activity_strava_id = ?
+          WHERE activity_strava_id = $1
         `,
-        )
-        .get(stravaId) as Record<string, unknown> | undefined;
+        [stravaId],
+      );
 
+      const row = result.rows[0] as Record<string, unknown> | undefined;
       if (!row) {
         return null;
       }
@@ -590,14 +660,28 @@ export function createRepository(db: Database.Database) {
       return {
         activityId: Number(row.activity_strava_id),
         content: String(row.content),
-        generatedAt: String(row.generated_at),
+        generatedAt: toIsoString(row.generated_at),
         cached: true,
       };
     },
 
-    saveActivityAnalysis(stravaId: number, content: string): ActivityAiAnalysis {
+    async saveActivityAnalysis(stravaId: number, content: string): Promise<ActivityAiAnalysis> {
       const generatedAt = new Date().toISOString();
-      upsertAnalysisStmt.run(stravaId, content, generatedAt);
+      await db.query(
+        `
+          INSERT INTO activity_ai_analysis (
+            activity_strava_id,
+            content,
+            generated_at
+          ) VALUES ($1, $2, $3)
+          ON CONFLICT(activity_strava_id)
+          DO UPDATE SET
+            content = EXCLUDED.content,
+            generated_at = EXCLUDED.generated_at
+        `,
+        [stravaId, content, generatedAt],
+      );
+
       return {
         activityId: stravaId,
         content,
@@ -606,29 +690,27 @@ export function createRepository(db: Database.Database) {
       };
     },
 
-    getCalendarFilterOptions(): CalendarFilterOptions {
-      const rows = db
-        .prepare(
-          `
+    async getCalendarFilterOptions(): Promise<CalendarFilterOptions> {
+      const { rows } = await db.query(`
           SELECT
-            CAST(strftime('%Y', start_date_local) AS INTEGER) AS year,
-            CAST(strftime('%m', start_date_local) AS INTEGER) AS month
+            EXTRACT(YEAR FROM start_date_local AT TIME ZONE 'Asia/Shanghai')::int AS year,
+            EXTRACT(MONTH FROM start_date_local AT TIME ZONE 'Asia/Shanghai')::int AS month
           FROM activities
           GROUP BY year, month
           ORDER BY year DESC, month ASC
-        `,
-        )
-        .all() as Array<Record<string, unknown>>;
+        `);
 
       const years: number[] = [];
       const monthsByYear: Record<string, number[]> = {};
 
       for (const row of rows) {
-        const year = Number(row.year);
-        const month = Number(row.month);
+        const mapped = row as Record<string, unknown>;
+        const year = Number(mapped.year);
+        const month = Number(mapped.month);
         if (!Number.isFinite(year) || !Number.isFinite(month)) {
           continue;
         }
+
         if (!years.includes(year)) {
           years.push(year);
         }
@@ -642,166 +724,154 @@ export function createRepository(db: Database.Database) {
       return { years, monthsByYear };
     },
 
-    createTrainingPlan(date: string, planText: string): TrainingPlan {
-      const now = new Date().toISOString();
-      const result = db
-        .prepare(
-          `
+    async createTrainingPlan(date: string, planText: string): Promise<TrainingPlan> {
+      const { rows } = await db.query(
+        `
           INSERT INTO training_plans (date, plan_text, created_at, updated_at)
-          VALUES (?, ?, ?, ?)
+          VALUES ($1::date, $2, NOW(), NOW())
+          RETURNING id, date, plan_text, created_at, updated_at
         `,
-        )
-        .run(date, planText, now, now);
-
-      return {
-        id: Number(result.lastInsertRowid),
-        date,
-        planText,
-        createdAt: now,
-        updatedAt: now,
-      };
+        [date, planText],
+      );
+      return mapTrainingPlan(rows[0] as Record<string, unknown>);
     },
 
-    getTrainingPlanByDate(date: string): TrainingPlan | null {
-      const row = db
-        .prepare(
-          `
+    async getTrainingPlanByDate(date: string): Promise<TrainingPlan | null> {
+      const { rows } = await db.query(
+        `
           SELECT id, date, plan_text, created_at, updated_at
           FROM training_plans
-          WHERE date = ?
+          WHERE date = $1::date
         `,
-        )
-        .get(date) as Record<string, unknown> | undefined;
-
-      if (!row) {
-        return null;
-      }
-
-      return {
-        id: Number(row.id),
-        date: String(row.date),
-        planText: String(row.plan_text),
-        createdAt: String(row.created_at),
-        updatedAt: String(row.updated_at),
-      };
+        [date],
+      );
+      const row = rows[0] as Record<string, unknown> | undefined;
+      return row ? mapTrainingPlan(row) : null;
     },
 
-    updateTrainingPlan(date: string, planText: string): TrainingPlan | null {
-      const now = new Date().toISOString();
-      const result = db
-        .prepare(
-          `
+    async updateTrainingPlan(date: string, planText: string): Promise<TrainingPlan | null> {
+      const { rows } = await db.query(
+        `
           UPDATE training_plans
-          SET plan_text = ?, updated_at = ?
-          WHERE date = ?
+          SET plan_text = $2, updated_at = NOW()
+          WHERE date = $1::date
+          RETURNING id, date, plan_text, created_at, updated_at
         `,
-        )
-        .run(planText, now, date);
-
-      if (result.changes === 0) {
-        return null;
-      }
-
-      return this.getTrainingPlanByDate(date);
+        [date, planText],
+      );
+      const row = rows[0] as Record<string, unknown> | undefined;
+      return row ? mapTrainingPlan(row) : null;
     },
 
-    deleteTrainingPlan(date: string): boolean {
-      const result = db
-        .prepare(
-          `
+    async deleteTrainingPlan(date: string): Promise<boolean> {
+      const result = await db.query(
+        `
           DELETE FROM training_plans
-          WHERE date = ?
+          WHERE date = $1::date
         `,
-        )
-        .run(date);
-
-      return result.changes > 0;
+        [date],
+      );
+      return (result.rowCount ?? 0) > 0;
     },
 
-    getTrainingPlansByRange(from?: string, to?: string): TrainingPlan[] {
+    async getTrainingPlansByRange(from?: string, to?: string): Promise<TrainingPlan[]> {
       const where = buildPlanDateWhere({ from, to });
-      const rows = db
-        .prepare(
-          `
+      const { rows } = await db.query(
+        `
           SELECT id, date, plan_text, created_at, updated_at
           FROM training_plans
           ${where.clause}
           ORDER BY date DESC
         `,
-        )
-        .all(...where.params) as Array<Record<string, unknown>>;
-
-      return rows.map((row) => ({
-        id: Number(row.id),
-        date: String(row.date),
-        planText: String(row.plan_text),
-        createdAt: String(row.created_at),
-        updatedAt: String(row.updated_at),
-      }));
+        where.params,
+      );
+      return rows.map((row) => mapTrainingPlan(row as Record<string, unknown>));
     },
 
-    getDailySummary(year: number, month: number): DailySummary[] {
-      // 生成月份的所有日期
-      const firstDay = new Date(year, month - 1, 1);
-      const lastDay = new Date(year, month, 0);
-      const days: string[] = [];
-
-      for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
-        days.push(formatLocalDateKey(d));
-      }
-
+    async getDailySummary(year: number, month: number): Promise<DailySummary[]> {
+      const days = buildMonthDateKeys(year, month);
       if (days.length === 0) {
         return [];
       }
 
       const from = days[0];
       const to = days[days.length - 1];
+      const [plansResult, activitiesResult] = await Promise.all([
+        db.query(
+          `
+            SELECT id, date, plan_text, created_at, updated_at
+            FROM training_plans
+            WHERE date >= $1::date AND date <= $2::date
+            ORDER BY date DESC
+          `,
+          [from, to],
+        ),
+        db.query(
+          `
+            SELECT
+              strava_id,
+              name,
+              device_name,
+              start_date_local,
+              distance_m,
+              moving_time_s,
+              elapsed_time_s,
+              total_elevation_gain_m,
+              average_speed_mps,
+              max_speed_mps,
+              average_heartrate,
+              max_heartrate,
+              average_cadence,
+              calories,
+              suffer_score,
+              map_summary_polyline,
+              map_polyline,
+              heartrate_zones_json,
+              trend_points_json,
+              updated_at,
+              (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km,
+              (SELECT MAX(max_heartrate) FROM activities) AS athlete_max_heartrate
+            FROM activities
+            WHERE DATE(start_date_local AT TIME ZONE 'Asia/Shanghai') >= $1::date
+              AND DATE(start_date_local AT TIME ZONE 'Asia/Shanghai') <= $2::date
+            ORDER BY start_date_local ASC
+          `,
+          [from, to],
+        ),
+      ]);
 
-      // 批量查询计划和活动
-      const plans = this.getTrainingPlansByRange(from, to);
-      const activities = this.listActivities({
-        from,
-        to,
-        page: 1,
-        pageSize: 1000,
-        sortBy: 'start_date_local',
-        sortDir: 'asc',
-      });
+      const planMap = new Map<string, TrainingPlan>();
+      for (const row of plansResult.rows) {
+        const plan = mapTrainingPlan(row as Record<string, unknown>);
+        planMap.set(plan.date, plan);
+      }
 
-      // 组装每日摘要
-      const planMap = new Map(plans.map((p) => [p.date, p]));
       const activityMap = new Map<string, RunActivity[]>();
-
-      for (const activity of activities.items) {
-        const date = activity.startDateLocal.split('T')[0];
-        if (!activityMap.has(date)) {
-          activityMap.set(date, []);
+      for (const row of activitiesResult.rows) {
+        const activity = mapRunActivity(row as Record<string, unknown>);
+        const dateKey = toShanghaiDateKey(activity.startDateLocal);
+        if (!activityMap.has(dateKey)) {
+          activityMap.set(dateKey, []);
         }
-        activityMap.get(date)!.push(activity);
+        activityMap.get(dateKey)?.push(activity);
       }
 
       return days.map((date) => {
         const plan = planMap.get(date) ?? null;
-        const dayActivities = activityMap.get(date) ?? [];
+        const activities = activityMap.get(date) ?? [];
 
-        let status: CompletionStatus;
-        if (!plan) {
-          status = 'no_plan';
-        } else if (dayActivities.length === 0) {
-          status = 'missed';
-        } else {
-          status = 'completed';
+        let completionStatus: CompletionStatus = 'no_plan';
+        if (plan) {
+          completionStatus = activities.length > 0 ? 'completed' : 'missed';
         }
 
         return {
           date,
           plan,
-          activities: dayActivities,
-          completionStatus: status,
+          activities,
+          completionStatus,
         };
       });
     },
   };
 }
-
-export type RunRepository = ReturnType<typeof createRepository>;
