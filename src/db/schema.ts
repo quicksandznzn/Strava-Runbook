@@ -52,5 +52,15 @@ export async function applySchema(db: Pool | PoolClient): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_activities_strava_id ON activities(strava_id);
     CREATE INDEX IF NOT EXISTS idx_splits_activity_id ON activity_splits(activity_strava_id);
     CREATE INDEX IF NOT EXISTS idx_ai_analysis_activity_id ON activity_ai_analysis(activity_strava_id);
+
+    CREATE TABLE IF NOT EXISTS training_plans (
+      id BIGSERIAL PRIMARY KEY,
+      date DATE NOT NULL UNIQUE,
+      plan_text TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_training_plans_date ON training_plans(date);
   `);
 }

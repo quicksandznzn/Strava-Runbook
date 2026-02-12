@@ -8,11 +8,18 @@ import type {
   RunActivity,
   SortDirection,
   SummaryMetrics,
+  TrainingPlan,
 } from '../shared/types.js';
 import type { RunRepository } from '../db/repository.js';
 import { runSync, type SyncStats } from '../cli/sync.js';
 
 const DEFAULT_ATHLETE_MAX_HEARTRATE = 186;
+const activityDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'UTC',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 function isValidDateInput(value: string | undefined): boolean {
   if (!value) {
@@ -58,6 +65,10 @@ function toDateString(value: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function toActivityDate(value: string): string {
+  return activityDateFormatter.format(new Date(value));
+}
+
 function getPeriodRangeInShanghai(period: PeriodAnalysisPeriod, now: Date = new Date()): { from: string; to: string } {
   const shanghaiOffsetMs = 8 * 60 * 60 * 1000;
   const shanghaiNow = new Date(now.getTime() + shanghaiOffsetMs);
@@ -80,8 +91,52 @@ function getPeriodRangeInShanghai(period: PeriodAnalysisPeriod, now: Date = new 
   };
 }
 
+function shouldUseCachedAnalysis(
+  cached: ActivityAiAnalysis | null,
+  force: boolean,
+  plan: TrainingPlan | null,
+): cached is ActivityAiAnalysis {
+  if (!cached || force) {
+    return false;
+  }
+  if (!plan) {
+    return true;
+  }
+
+  if (!cached.content.includes('## 计划完成度')) {
+    return false;
+  }
+
+  const generatedAt = Date.parse(cached.generatedAt);
+  const planUpdatedAt = Date.parse(plan.updatedAt);
+  if (!Number.isFinite(generatedAt) || !Number.isFinite(planUpdatedAt)) {
+    return true;
+  }
+
+  return generatedAt >= planUpdatedAt;
+}
+
+function ensurePlanCompletionSection(content: string, plan: TrainingPlan | null): string {
+  if (!plan) {
+    return content;
+  }
+
+  if (content.includes('## 计划完成度')) {
+    return content;
+  }
+
+  const suffix = [
+    '',
+    '## 计划完成度',
+    `训练计划：${plan.planText}`,
+    '本次分析已关联训练计划，请结合当次跑步数据评估完成情况。',
+  ].join('\n');
+
+  return `${content.trimEnd()}\n${suffix}\n`;
+}
+
 interface AppOptions {
-  analyzeActivity?: (activity: RunActivity) => Promise<string>;
+  analyzeActivity?: (activity: RunActivity, plan?: TrainingPlan) => Promise<string>;
   analyzePeriod?: (input: {
     period: PeriodAnalysisPeriod;
     from: string;
@@ -217,8 +272,20 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
       }
 
       const force = Boolean(req.body?.force);
-      const cached = await repository.getActivityAnalysis(id);
-      if (cached && !force) {
+
+      const activity = await repository.getActivityById(id);
+      if (!activity) {
+        res.status(404).json({ error: 'Activity not found.' });
+        return;
+      }
+
+      const date = toActivityDate(activity.startDateLocal);
+      const [plan, cached] = await Promise.all([
+        repository.getTrainingPlanByDate(date),
+        repository.getActivityAnalysis(id),
+      ]);
+
+      if (shouldUseCachedAnalysis(cached, force, plan)) {
         res.json({ ...cached, cached: true });
         return;
       }
@@ -228,13 +295,8 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         return;
       }
 
-      const activity = await repository.getActivityById(id);
-      if (!activity) {
-        res.status(404).json({ error: 'Activity not found.' });
-        return;
-      }
-
-      const content = await options.analyzeActivity(activity);
+      const rawContent = await options.analyzeActivity(activity, plan ?? undefined);
+      const content = ensurePlanCompletionSection(rawContent, plan);
       const payload: ActivityAiAnalysis = await repository.saveActivityAnalysis(id, content);
       res.json(payload);
     } catch (error) {
@@ -296,6 +358,135 @@ export function createApp(repository: RunRepository, options: AppOptions = {}) {
         generatedAt: new Date().toISOString(),
       };
       res.json(payload);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/training-plans', async (req, res, next) => {
+    try {
+      const { date, planText } = req.body;
+
+      if (!date || !isValidDateInput(date)) {
+        res.status(400).json({ error: 'Invalid or missing date. Use YYYY-MM-DD format.' });
+        return;
+      }
+
+      if (!planText || typeof planText !== 'string' || planText.trim() === '') {
+        res.status(400).json({ error: 'planText is required and must be a non-empty string.' });
+        return;
+      }
+
+      const plan = await repository.createTrainingPlan(date, planText);
+      res.status(201).json(plan);
+    } catch (error) {
+      const pgError = error as { code?: string; message?: string };
+      if (pgError.code === '23505') {
+        res.status(409).json({ error: 'A training plan already exists for this date.' });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  app.get('/api/training-plans/:date', async (req, res, next) => {
+    try {
+      const date = req.params.date;
+
+      if (!isValidDateInput(date)) {
+        res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return;
+      }
+
+      const plan = await repository.getTrainingPlanByDate(date);
+      if (!plan) {
+        res.status(404).json({ error: 'Training plan not found for this date.' });
+        return;
+      }
+
+      res.json(plan);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put('/api/training-plans/:date', async (req, res, next) => {
+    try {
+      const date = req.params.date;
+      const { planText } = req.body;
+
+      if (!isValidDateInput(date)) {
+        res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return;
+      }
+
+      if (!planText || typeof planText !== 'string' || planText.trim() === '') {
+        res.status(400).json({ error: 'planText is required and must be a non-empty string.' });
+        return;
+      }
+
+      const plan = await repository.updateTrainingPlan(date, planText);
+      if (!plan) {
+        res.status(404).json({ error: 'Training plan not found for this date.' });
+        return;
+      }
+
+      res.json(plan);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/api/training-plans/:date', async (req, res, next) => {
+    try {
+      const date = req.params.date;
+
+      if (!isValidDateInput(date)) {
+        res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return;
+      }
+
+      const deleted = await repository.deleteTrainingPlan(date);
+      res.json({ deleted });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/training-plans', async (req, res, next) => {
+    try {
+      const from = req.query.from as string | undefined;
+      const to = req.query.to as string | undefined;
+
+      if (!isValidDateInput(from) || !isValidDateInput(to)) {
+        res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return;
+      }
+
+      const plans = await repository.getTrainingPlansByRange(from, to);
+      res.json(plans);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/calendar/daily-summary', async (req, res, next) => {
+    try {
+      const year = Number(req.query.year);
+      const month = Number(req.query.month);
+
+      if (!Number.isFinite(year) || !Number.isInteger(year)) {
+        res.status(400).json({ error: 'year is required and must be an integer.' });
+        return;
+      }
+
+      if (!Number.isFinite(month) || !Number.isInteger(month) || month < 1 || month > 12) {
+        res.status(400).json({ error: 'month is required and must be an integer between 1 and 12.' });
+        return;
+      }
+
+      const summary = await repository.getDailySummary(year, month);
+      res.json(summary);
     } catch (error) {
       next(error);
     }

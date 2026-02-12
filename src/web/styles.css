@@ -34,10 +34,49 @@ h4 {
   font-family: 'Space Grotesk', sans-serif;
 }
 
-.page-shell {
+.app-container {
   max-width: 1200px;
   margin: 0 auto;
   padding: 24px;
+  display: grid;
+  gap: 20px;
+  animation: fade-in 0.45s ease;
+}
+
+.main-nav {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 0;
+}
+
+.nav-link {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 10px 18px;
+  background: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  text-decoration: none;
+  color: var(--ink-0);
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.nav-link:hover {
+  background: rgba(255, 109, 63, 0.12);
+  border-color: rgba(255, 109, 63, 0.3);
+}
+
+.nav-link.active {
+  background: linear-gradient(120deg, rgba(255, 109, 63, 0.2), rgba(14, 136, 146, 0.2));
+  border-color: rgba(14, 136, 146, 0.45);
+  font-weight: 700;
+}
+
+.page-shell {
+  max-width: none;
+  margin: 0;
+  padding: 20px 40px;
   display: grid;
   gap: 20px;
   animation: fade-in 0.45s ease;
@@ -400,6 +439,16 @@ td {
   line-height: 1.6;
 }
 
+.training-plan-linked {
+  display: grid;
+  gap: 8px;
+}
+
+.training-plan-linked-date {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
 .split-table table {
   font-size: 13px;
 }
@@ -640,6 +689,210 @@ td {
   }
 }
 
+/* === Calendar Styles === */
+.calendar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.calendar-header-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.calendar-select {
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+}
+
+.calendar-header-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.calendar-grid-container {
+  display: grid;
+  gap: 8px;
+}
+
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.weekday-header {
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink-1);
+  padding: 8px 0;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 24px;
+  width: 100%;
+}
+
+.day-cell {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  min-height: 200px;
+  background: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.day-cell:hover {
+  background: rgba(255, 109, 63, 0.05);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.day-cell.completed {
+  border-left: 4px solid #10b981;
+}
+
+.day-cell.missed {
+  border-left: 4px solid #ef4444;
+}
+
+.day-cell.no_plan {
+  background: #f3f4f6;
+}
+
+.day-cell.other-month {
+  opacity: 0.4;
+}
+
+.day-cell.today {
+  background: linear-gradient(145deg, rgba(255, 109, 63, 0.15), rgba(14, 136, 146, 0.12));
+  border-color: var(--brand-0);
+  font-weight: 700;
+}
+
+.day-number {
+  font-size: 28px;
+  font-weight: 700;
+  font-family: 'Space Grotesk', sans-serif;
+  color: var(--ink-0);
+}
+
+.plan-preview {
+  font-size: 15px;
+  color: var(--ink-0);
+  line-height: 1.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  font-weight: 500;
+}
+
+.run-badge {
+  font-size: 12px;
+  background: linear-gradient(120deg, rgba(255, 109, 63, 0.2), rgba(14, 136, 146, 0.2));
+  border-radius: 999px;
+  padding: 4px 10px;
+  align-self: flex-start;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.plan-editor {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.plan-textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 14px;
+  resize: vertical;
+  margin-top: 8px;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.plan-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+}
+
+.delete-btn {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.delete-confirm {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 14px;
+}
+
+.day-activities {
+  margin: 16px 0;
+}
+
+.activity-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.activity-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.activity-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.activity-time {
+  font-size: 12px;
+  color: var(--ink-1);
+  white-space: nowrap;
+}
+
+.activity-item-stats {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--ink-1);
+}
+
 @media (max-width: 960px) {
   .hero {
     flex-direction: column;
@@ -697,4 +950,63 @@ td {
     font-size: 10px;
     gap: 4px 8px;
   }
+
+  .calendar-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .calendar-header-nav {
+    justify-content: center;
+  }
+
+  .day-cell {
+    min-height: 80px;
+    padding: 8px;
+  }
+
+  .day-number {
+    font-size: 14px;
+  }
+
+  .plan-preview {
+    font-size: 11px;
+  }
+}
+
+/* Activity item actions and AI analysis */
+.activity-item-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.plan-hint {
+  font-size: 12px;
+  color: var(--ink-1);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.analysis-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.analysis-content {
+  background: rgba(14, 136, 146, 0.05);
+  border: 1px solid rgba(14, 136, 146, 0.2);
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  font-family: 'Noto Sans SC', sans-serif;
+  color: var(--ink-0);
 }

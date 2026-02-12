@@ -1,12 +1,14 @@
 import type {
   ActivityAiAnalysis,
   CalendarFilterOptions,
+  DailySummary,
   PaginatedActivities,
   PeriodAnalysisPeriod,
   PeriodAnalysisResult,
   RunActivity,
   SummaryMetrics,
   SyncResult,
+  TrainingPlan,
   WeeklyTrendPoint,
 } from '../shared/types.js';
 
@@ -101,5 +103,56 @@ export const api = {
       },
       body: JSON.stringify({ period }),
     });
+  },
+
+  getTrainingPlansByRange(from?: string, to?: string): Promise<TrainingPlan[]> {
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    const query = params.toString();
+    return requestJson(`/api/training-plans${query ? `?${query}` : ''}`);
+  },
+
+  getTrainingPlanByDate(date: string): Promise<TrainingPlan | null> {
+    return fetch(`/api/training-plans/${date}`).then(async (response) => {
+      if (response.status === 404) {
+        return null;
+      }
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`${response.status}: ${text}`);
+      }
+      return (await response.json()) as TrainingPlan;
+    });
+  },
+
+  createTrainingPlan(date: string, planText: string): Promise<TrainingPlan> {
+    return requestJson('/api/training-plans', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ date, planText }),
+    });
+  },
+
+  updateTrainingPlan(date: string, planText: string): Promise<TrainingPlan> {
+    return requestJson(`/api/training-plans/${date}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ planText }),
+    });
+  },
+
+  deleteTrainingPlan(date: string): Promise<{ deleted: boolean }> {
+    return requestJson(`/api/training-plans/${date}`, {
+      method: 'DELETE',
+    });
+  },
+
+  getDailySummary(year: number, month: number): Promise<DailySummary[]> {
+    return requestJson(`/api/calendar/daily-summary?year=${year}&month=${month}`);
   },
 };

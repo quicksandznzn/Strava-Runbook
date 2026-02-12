@@ -122,3 +122,20 @@ export interface PeriodAnalysisResult {
   content: string;
   generatedAt: string;
 }
+
+export interface TrainingPlan {
+  id: number;
+  date: string; // YYYY-MM-DD
+  planText: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CompletionStatus = 'completed' | 'missed' | 'no_plan';
+
+export interface DailySummary {
+  date: string;
+  plan: TrainingPlan | null;
+  activities: RunActivity[];
+  completionStatus: CompletionStatus;
+}

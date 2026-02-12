@@ -3,6 +3,8 @@ import type {
   ActivityAiAnalysis,
   ActivityQuery,
   CalendarFilterOptions,
+  CompletionStatus,
+  DailySummary,
   DateRangeQuery,
   PaginatedActivities,
   RunActivity,
@@ -10,6 +12,7 @@ import type {
   RunTrendPoint,
   RunSplit,
   SummaryMetrics,
+  TrainingPlan,
   WeeklyTrendPoint,
 } from '../shared/types.js';
 import { paceFromDistanceAndTime } from '../shared/units.js';
@@ -79,6 +82,12 @@ export interface RunRepository {
   getActivityAnalysis(stravaId: number): Promise<ActivityAiAnalysis | null>;
   saveActivityAnalysis(stravaId: number, content: string): Promise<ActivityAiAnalysis>;
   getCalendarFilterOptions(): Promise<CalendarFilterOptions>;
+  createTrainingPlan(date: string, planText: string): Promise<TrainingPlan>;
+  getTrainingPlanByDate(date: string): Promise<TrainingPlan | null>;
+  updateTrainingPlan(date: string, planText: string): Promise<TrainingPlan | null>;
+  deleteTrainingPlan(date: string): Promise<boolean>;
+  getTrainingPlansByRange(from?: string, to?: string): Promise<TrainingPlan[]>;
+  getDailySummary(year: number, month: number): Promise<DailySummary[]>;
 }
 
 const DEFAULT_QUERY: ActivityQuery = {
@@ -101,6 +110,33 @@ function buildDateWhere(range: DateRangeQuery, startIndex = 1): WhereClauseResul
 
   if (range.to) {
     clauses.push(`DATE(start_date_local AT TIME ZONE 'Asia/Shanghai') <= $${index}::date`);
+    params.push(range.to);
+    index += 1;
+  }
+
+  if (clauses.length === 0) {
+    return { clause: '', params };
+  }
+
+  return {
+    clause: `WHERE ${clauses.join(' AND ')}`,
+    params,
+  };
+}
+
+function buildPlanDateWhere(range: DateRangeQuery, startIndex = 1): WhereClauseResult {
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+  let index = startIndex;
+
+  if (range.from) {
+    clauses.push(`date >= $${index}::date`);
+    params.push(range.from);
+    index += 1;
+  }
+
+  if (range.to) {
+    clauses.push(`date <= $${index}::date`);
     params.push(range.to);
     index += 1;
   }
@@ -241,6 +277,52 @@ function toIsoString(value: unknown): string {
   return new Date().toISOString();
 }
 
+const calendarDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'UTC',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const shanghaiDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function toCalendarDateKey(dateIso: string): string {
+  return calendarDateFormatter.format(new Date(dateIso));
+}
+
+function toSqlDateString(value: unknown): string {
+  if (typeof value === 'string') {
+    const matched = value.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (matched) {
+      return matched[1];
+    }
+  }
+
+  if (value instanceof Date) {
+    return shanghaiDateFormatter.format(value);
+  }
+
+  const parsed = new Date(String(value));
+  if (!Number.isNaN(parsed.getTime())) {
+    return shanghaiDateFormatter.format(parsed);
+  }
+
+  return String(value);
+}
+
+function buildMonthDateKeys(year: number, month: number): string[] {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return [];
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const monthText = String(month).padStart(2, '0');
+  return Array.from({ length: daysInMonth }, (_, idx) => `${year}-${monthText}-${String(idx + 1).padStart(2, '0')}`);
+}
+
 function mapRunActivity(row: Record<string, unknown>): RunActivity {
   const athleteMaxHeartrate =
     row.athlete_max_heartrate == null
@@ -286,6 +368,16 @@ function mapRunSplit(row: Record<string, unknown>): RunSplit {
     averageHeartrate: row.average_heartrate == null ? null : Number(row.average_heartrate),
     averageCadence: row.average_cadence == null ? null : Number(row.average_cadence),
     calories: row.calories == null ? null : Number(row.calories),
+  };
+}
+
+function mapTrainingPlan(row: Record<string, unknown>): TrainingPlan {
+  return {
+    id: Number(row.id),
+    date: toSqlDateString(row.date),
+    planText: String(row.plan_text),
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at),
   };
 }
 
@@ -656,6 +748,156 @@ export function createRepository(db: Pool): RunRepository {
       }
 
       return { years, monthsByYear };
+    },
+
+    async createTrainingPlan(date: string, planText: string): Promise<TrainingPlan> {
+      const { rows } = await db.query(
+        `
+          INSERT INTO training_plans (date, plan_text, created_at, updated_at)
+          VALUES ($1::date, $2, NOW(), NOW())
+          RETURNING id, date, plan_text, created_at, updated_at
+        `,
+        [date, planText],
+      );
+      return mapTrainingPlan(rows[0] as Record<string, unknown>);
+    },
+
+    async getTrainingPlanByDate(date: string): Promise<TrainingPlan | null> {
+      const { rows } = await db.query(
+        `
+          SELECT id, date, plan_text, created_at, updated_at
+          FROM training_plans
+          WHERE date = $1::date
+        `,
+        [date],
+      );
+      const row = rows[0] as Record<string, unknown> | undefined;
+      return row ? mapTrainingPlan(row) : null;
+    },
+
+    async updateTrainingPlan(date: string, planText: string): Promise<TrainingPlan | null> {
+      const { rows } = await db.query(
+        `
+          UPDATE training_plans
+          SET plan_text = $2, updated_at = NOW()
+          WHERE date = $1::date
+          RETURNING id, date, plan_text, created_at, updated_at
+        `,
+        [date, planText],
+      );
+      const row = rows[0] as Record<string, unknown> | undefined;
+      return row ? mapTrainingPlan(row) : null;
+    },
+
+    async deleteTrainingPlan(date: string): Promise<boolean> {
+      const result = await db.query(
+        `
+          DELETE FROM training_plans
+          WHERE date = $1::date
+        `,
+        [date],
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async getTrainingPlansByRange(from?: string, to?: string): Promise<TrainingPlan[]> {
+      const where = buildPlanDateWhere({ from, to });
+      const { rows } = await db.query(
+        `
+          SELECT id, date, plan_text, created_at, updated_at
+          FROM training_plans
+          ${where.clause}
+          ORDER BY date DESC
+        `,
+        where.params,
+      );
+      return rows.map((row) => mapTrainingPlan(row as Record<string, unknown>));
+    },
+
+    async getDailySummary(year: number, month: number): Promise<DailySummary[]> {
+      const days = buildMonthDateKeys(year, month);
+      if (days.length === 0) {
+        return [];
+      }
+
+      const from = days[0];
+      const to = days[days.length - 1];
+      const [plansResult, activitiesResult] = await Promise.all([
+        db.query(
+          `
+            SELECT id, date, plan_text, created_at, updated_at
+            FROM training_plans
+            WHERE date >= $1::date AND date <= $2::date
+            ORDER BY date DESC
+          `,
+          [from, to],
+        ),
+        db.query(
+          `
+            SELECT
+              strava_id,
+              name,
+              device_name,
+              start_date_local,
+              distance_m,
+              moving_time_s,
+              elapsed_time_s,
+              total_elevation_gain_m,
+              average_speed_mps,
+              max_speed_mps,
+              average_heartrate,
+              max_heartrate,
+              average_cadence,
+              calories,
+              suffer_score,
+              map_summary_polyline,
+              map_polyline,
+              heartrate_zones_json,
+              trend_points_json,
+              updated_at,
+              (moving_time_s * 1000.0 / NULLIF(distance_m, 0)) AS pace_sec_per_km,
+              (SELECT MAX(max_heartrate) FROM activities) AS athlete_max_heartrate
+            FROM activities
+            WHERE DATE(start_date_local AT TIME ZONE 'UTC') >= $1::date
+              AND DATE(start_date_local AT TIME ZONE 'UTC') <= $2::date
+            ORDER BY start_date_local ASC
+          `,
+          [from, to],
+        ),
+      ]);
+
+      const planMap = new Map<string, TrainingPlan>();
+      for (const row of plansResult.rows) {
+        const plan = mapTrainingPlan(row as Record<string, unknown>);
+        planMap.set(plan.date, plan);
+      }
+
+      const activityMap = new Map<string, RunActivity[]>();
+      for (const row of activitiesResult.rows) {
+        const activity = mapRunActivity(row as Record<string, unknown>);
+        const dateKey = toCalendarDateKey(activity.startDateLocal);
+        if (!activityMap.has(dateKey)) {
+          activityMap.set(dateKey, []);
+        }
+        activityMap.get(dateKey)?.push(activity);
+      }
+
+      return days.map((date) => {
+        const plan = planMap.get(date) ?? null;
+        const activities = activityMap.get(date) ?? [];
+
+        let completionStatus: CompletionStatus = 'no_plan';
+        if (plan) {
+          completionStatus = activities.length > 0 ? 'completed' : 'missed';
+        }
+
+        return {
+          date,
+          plan,
+          activities,
+          completionStatus,
+        };
+      });
     },
   };
 }
