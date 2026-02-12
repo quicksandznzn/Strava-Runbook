@@ -4,7 +4,7 @@
 
 ## Preview
 
-![Run Strava Dashboard](docs/dashboard_v2.png)
+![Run Strava Dashboard](docs/dashboard_preview_v2.png)
 
 ## Features
 
